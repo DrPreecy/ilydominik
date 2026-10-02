@@ -116,11 +116,15 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/g,
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b/g,
   /\bAIza[0-9A-Za-z_-]{30,}\b/g,
+  /\bglpat-[A-Za-z0-9_-]{20,}\b/g,
+  /\bnpm_[A-Za-z0-9]{36}\b/g,
 ];
 
 /** Keeps the field name (helpful when reviewing) and drops the value, quoted or not. */
 const CREDENTIAL =
-  /\b((?:[A-Za-z0-9]+[_-])*(?:password|passwd|pwd|secret|token|api[_-]?key)["']?\s*[:=]\s*)(["']?)([^\s"',;]{4,})\2/gi;
+  /\b((?:[A-Za-z0-9]+[_-])*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)(?:[_-][A-Za-z0-9]+)*["']?\s*[:=]\s*)(["']?)([^\s"',;]{4,})\2/gi;
+/** `scheme://user:password@host` keeps the user and host. */
+const URL_PASSWORD = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:)[^\s/@]+@/gi;
 /** `Authorization: <scheme> <value>` loses everything after the colon. */
 const AUTH_HEADER = /\b(authorization["']?\s*[:=]\s*)["']?(?:(?:bearer|basic|token|digest)\s+)?[^\s"',;]+["']?/gi;
 const BEARER = /\b(bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi;
@@ -133,6 +137,7 @@ export function maskSecrets(text: string): string {
   return result
     .replace(AUTH_HEADER, (_match, prefix: string) => `${prefix}[redacted]`)
     .replace(BEARER, (_match, prefix: string) => `${prefix}[redacted]`)
+    .replace(URL_PASSWORD, (_match, prefix: string) => `${prefix}[redacted]@`)
     .replace(CREDENTIAL, (_match, prefix: string) => `${prefix}[redacted]`);
 }
 

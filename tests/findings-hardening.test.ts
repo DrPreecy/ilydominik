@@ -214,3 +214,28 @@ describe('sarif paths', () => {
     assert.match(findingTitle(outside!), /\(outside the project: \/etc\/passwd:3\)/);
   });
 });
+
+describe('secret masking covers common credential formats', () => {
+  const cases: Array<[string, RegExp]> = [
+    ['aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY', /wJalr/],
+    ['token glpat-abcdefghijklmnopqrst here', /glpat-/],
+    ['npm_abcdefghijklmnopqrstuvwxyz0123456789', /npm_/],
+    ['postgres://user:SuperSecret1@db.example.com:5432/app', /SuperSecret1/],
+    ['https://user:pa55word@example.com/x', /pa55word/],
+    ['Authorization: Bearer abcdefabcdef1234567890', /abcdefabcdef/],
+    ['password: "hunter2"', /hunter2/],
+  ];
+  for (const [input, leaked] of cases) {
+    it(`masks ${input.slice(0, 32)}`, () => {
+      const masked = redactSecrets(input);
+      assert.doesNotMatch(masked, leaked);
+      assert.match(masked, /\[redacted\]/);
+    });
+  }
+
+  it('keeps ordinary prose and the user and host of a URL', () => {
+    assert.equal(redactSecrets('the password policy is strict'), 'the password policy is strict');
+    assert.equal(redactSecrets('token count is 5'), 'token count is 5');
+    assert.equal(redactSecrets('https://user:pa55word@example.com/x'), 'https://user:[redacted]@example.com/x');
+  });
+});

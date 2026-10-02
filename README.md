@@ -71,7 +71,7 @@ Secrets are redacted before anything is stored and in every prompt context, and 
 `safe-run` guards a command; it does not isolate it. When [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) is installed, CWS can put agent work in a sandbox whose network access is a file you approve:
 
 1. `cws sandbox policy --rule api.github.com:443` records the rule (with a confirmation code) as a decision. Nothing else is reachable — no wildcards, no query strings, no plain-TCP bypass, no local or cloud-metadata addresses. `.cws/sandbox/policy.yaml` is rebuilt from the approved rules before every run, so editing it by hand changes nothing.
-2. `cws sandbox run -- <command>` creates a sandbox with that policy, uploads the project, runs one command and reports its exit code. Add `--claim <id>` to attach the run as evidence.
+2. `cws sandbox run -- <command>` creates a sandbox with that policy, uploads the project, runs one command, reports its exit code and deletes the sandbox again (`--keep` leaves it running). Add `--claim <id>` to attach the run as evidence.
 3. A request the sandbox is not allowed to make becomes a pending rule. `cws sandbox rules` lists them; `cws sandbox rules --approve <chunk-id>` (with a confirmation code) or `--reject <chunk-id> --reason "..."` answers one, and your answer is recorded as a decision.
 
 Without OpenShell, `cws sandbox status` says so and everything else keeps working. The sandbox is the one place CWS relies on an outside tool for the guarantee; it never fakes that guarantee itself.
@@ -87,7 +87,7 @@ Without OpenShell, `cws sandbox status` says so and everything else keeps workin
 - An AI with shell access could forge entries. CWS makes that deliberate and visible with challenge codes and a hash-chained log, not impossible.
 - Human commands need a real terminal. Piping text into `cws dump -` as a human is refused; type it or pass it as an argument.
 - There is no MCP server yet; agents use the CLI in their terminal.
-- `safe-run` is an advisory native-executable guard, not a sandbox. It blocks shells, interpreters and wrappers (`node -e`, `npx`, `env`, `wsl`, ...), destructive git forms (`reset --hard`, force push, `clean`, aliases) and deleting `.git` or `.cws`, but it cannot see what an allowed program does, for example an edited npm script.
+- `safe-run` is an advisory native-executable guard, not a sandbox. It blocks shells, interpreters and wrappers (`node -e`, `npx`, `env`, `wsl`, ...), destructive git forms (`reset --hard`, force push, `clean`, aliases), deleting or moving anything outside the project or inside `.git` and `.cws`, but it cannot see what an allowed program does, for example an edited npm script. `safe-run --check` refuses `;`, `|`, `<`, `>` even inside an argument, because a checked command is often retyped into a shell; `safe-run -- ...` itself runs without a shell, so there such characters in a message are plain text.
 - Tool paths come only from `CWS_TOOL_OCR`, `CWS_TOOL_OPENSHELL` and `CWS_TOOL_PROVER`, never from files in the repository.
 
 ## Develop
