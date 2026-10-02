@@ -17,7 +17,7 @@ export interface SafetyDecision {
 }
 
 const SHELL_OPERATORS = ['&&', '||', ';', '|', '<', '>'];
-const DELETE_COMMANDS = new Set(['rm', 'del', 'erase', 'rmdir', 'rd', 'remove-item', 'ri']);
+const DELETE_COMMANDS = new Set(['rm', 'del', 'erase', 'rmdir', 'rd', 'remove-item', 'ri', 'shred']);
 const SHELL_ONLY_DELETES = new Set(['del', 'erase', 'rd', 'remove-item', 'ri']);
 const REMOVE_ITEM_TARGET_FLAGS = new Set(['-path', '-literalpath']);
 const REMOVE_ITEM_TARGET_PREFIXES = ['-path:', '-literalpath:'];
@@ -128,7 +128,7 @@ function allow(command: string, destructive: boolean, targets: string[], notes: 
 }
 
 function isDeleteSwitch(command: string, token: string): boolean {
-  if (command === 'rm') return /^-[rfivd]+$/.test(token) || RM_LONG_SWITCHES.has(token);
+  if (command === 'rm') return /^-[rRfivd]+$/.test(token) || RM_LONG_SWITCHES.has(token);
   if (command === 'remove-item' || command === 'ri') return REMOVE_ITEM_SWITCHES.has(token.toLowerCase());
   if (command === 'rmdir' && process.platform !== 'win32') return token === '-v' || token === '--verbose';
   if (command === 'rmdir' || command === 'rd') return /^\/[sq]$/i.test(token);
@@ -284,8 +284,10 @@ function isDestructivePushArg(arg: string): boolean {
   return PUSH_DESTRUCTIVE.some((option) => isAbbrev(arg, option));
 }
 
+/** `git config --get x`, `git config --list`, or a bare `git config user.name` (one key, no value). */
 function isConfigRead(args: readonly string[]): boolean {
-  return args.some((arg) => GIT_CONFIG_READS.has(arg)) && !args.some((arg) => GIT_CONFIG_WRITES.has(arg));
+  if (args.some((arg) => GIT_CONFIG_WRITES.has(arg))) return false;
+  return args.some((arg) => GIT_CONFIG_READS.has(arg)) || args.filter((arg) => !arg.startsWith('-')).length === 1;
 }
 
 function stashRule(args: readonly string[]): string | null {

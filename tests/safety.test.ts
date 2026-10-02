@@ -21,6 +21,19 @@ describe('command safety guard', () => {
     assert.equal(result.destructive, false);
   });
 
+  it('does not block everyday reads and uppercase rm flags', () => {
+    for (const args of [['git', 'config', 'user.name'], ['git', 'config', '--get', 'user.email'], ['rm', '-Rf', 'dist']]) {
+      assert.equal(assess(args).ok, true, args.join(' '));
+    }
+    assert.equal(assess(['git', 'config', 'user.name', 'x']).ok, false);
+    assert.equal(assess(['git', 'config', '--global', 'alias.x', '!sh']).ok, false);
+  });
+
+  it('treats shred as a delete, limited to the project', () => {
+    assert.equal(assess(['shred', '-u', 'dist/a']).ok, false);
+    assert.equal(assess(['shred', '../../outside']).ok, false);
+  });
+
   it('allows destructive cleanup only for explicit paths inside the project', () => {
     const result = assess(['rm', '-rf', 'dist']);
     assert.equal(result.ok, true);
