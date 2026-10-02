@@ -8,7 +8,7 @@ import { PURPOSES } from '../src/domain/types.ts';
 
 let dir: string;
 beforeEach(async () => {
-  dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cws-agents-'));
+  dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'cws-agents-')));
 });
 afterEach(async () => {
   await fs.rm(dir, { recursive: true, force: true });
