@@ -346,6 +346,7 @@ function branchRule(args: readonly string[]): string | null {
 /** Subcommand rules: a reason when the call can discard work or plant code, otherwise null. */
 const GIT_RULES: Readonly<Record<string, ArgsRule>> = {
   clean: () => 'git clean can erase untracked work broadly; delete explicit paths with cws safe-run instead',
+  rm: () => 'git rm can delete tracked files and change the index; run it yourself in your terminal',
   reset: (args) => (args.some((arg) => isAbbrev(arg, '--hard')) ? 'git reset --hard is blocked because it discards worktree changes' : null),
   push: (args) => (args.some(isDestructivePushArg) ? 'git push that forces, mirrors, prunes or deletes remote refs is blocked' : null),
   checkout: (args) => (args.includes('--') || args.includes('.') || discardsWorktree(args)

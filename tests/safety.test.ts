@@ -114,6 +114,14 @@ describe('command safety guard', () => {
     assert.match(result.reason ?? '', /git clean/i);
   });
 
+  it('blocks git rm because it deletes tracked files and changes the index', () => {
+    for (const args of [['git', 'rm', '-rf', '.'], ['git', '-C', '.', 'rm', '-rf', '.']]) {
+      const result = assess(args);
+      assert.equal(result.ok, false, args.join(' '));
+      assert.match(result.reason ?? '', /git rm/i);
+    }
+  });
+
   it('assesses every operand including absolute POSIX paths', () => {
     for (const target of ['/', '/outside', path.join(path.dirname(root), 'outside')]) {
       const result = assess(['rm', '-rf', 'dist', target]);
