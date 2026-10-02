@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Testing & Coverage
+coverage/
+*.lcov
+.nyc_output
+
+# Build & Cache
+dist/
+build/
+.cache/
+.turbo/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# OS & IDE
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+*.swo
+
+# Session & Scratchpad state
+*.log
+scratchpad/
+temp/

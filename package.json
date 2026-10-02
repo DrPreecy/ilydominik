@@ -1,0 +1,25 @@
+{
+  "name": "cognitive-work-system",
+  "version": "0.1.0",
+  "description": "An adaptive, human-led cognitive work environment for turning complex ideas into structured, tested projects.",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test --import tsx tests/**/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "cognitive-architecture",
+    "spec-driven-development",
+    "ai-agent",
+    "state-machine"
+  ],
+  "author": "Dominik",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
