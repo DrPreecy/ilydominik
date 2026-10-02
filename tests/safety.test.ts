@@ -29,6 +29,35 @@ describe('command safety guard', () => {
     assert.equal(assess(['git', 'config', '--global', 'alias.x', '!sh']).ok, false);
   });
 
+  it('checks every mv operand like a delete target', () => {
+    assert.equal(assess(['mv', 'src/a.ts', 'src/b.ts']).ok, true);
+    assert.equal(assess(['mv', '-f', '--', 'a', 'b']).ok, true);
+    for (const args of [
+      ['mv', 'src', '../../outside'],
+      ['mv', '../../outside/x', 'here'],
+      ['mv', '.git', 'old-git'],
+      ['mv', 'notes', '.cws/events.jsonl'],
+      ['mv', 'onlyone'],
+      ['mv', '-t', '/tmp', 'src'],
+      ['mv', 'a', 'E:..\\x'],
+      ['move', 'a', 'b'],
+      ['Move-Item', 'a', 'b'],
+    ]) {
+      assert.equal(assess(args).ok, false, args.join(' '));
+    }
+  });
+
+  it('lets shell characters inside an argument through only when cws runs it without a shell', () => {
+    const message = ['git', 'commit', '-m', 'fix; handle a|b'];
+    assert.equal(assess(message).ok, false);
+    assert.match(assess(message).reason ?? '', /without a shell/);
+    const run = assessCommandSafety(message, { cwd, projectRoot: root, runsWithoutShell: true });
+    assert.equal(run.ok, true);
+    for (const args of [['git', 'log', ';', 'rm'], ['ls', '|', 'x'], ['ls', '&&', 'x']]) {
+      assert.equal(assessCommandSafety(args, { cwd, projectRoot: root, runsWithoutShell: true }).ok, false, args.join(' '));
+    }
+  });
+
   it('treats shred as a delete, limited to the project', () => {
     assert.equal(assess(['shred', '-u', 'dist/a']).ok, false);
     assert.equal(assess(['shred', '../../outside']).ok, false);

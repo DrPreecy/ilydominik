@@ -18,7 +18,7 @@ function runProcess(argv: string[], cwd: string): Promise<number> {
 
 async function safeRun(env: Env, argv: string[], opts: SafeRunOptions): Promise<void> {
   const root = projectRoot(env) ?? env.io.cwd;
-  const decision = assessCommandSafety(argv, { cwd: env.io.cwd, projectRoot: root });
+  const decision = assessCommandSafety(argv, { cwd: env.io.cwd, projectRoot: root, runsWithoutShell: opts.check !== true });
   if (!decision.ok) fail(env, `blocked: ${decision.reason}`);
 
   const lines = [

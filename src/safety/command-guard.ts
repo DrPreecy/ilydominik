@@ -5,6 +5,12 @@ import { CWS_DIR } from '../store/event-log.ts';
 export interface SafetyContext {
   cwd: string;
   projectRoot: string;
+  /**
+   * True when cws itself runs exactly this argv with shell: false. Then `;` or `|` inside an
+   * argument (a commit message, a log format) is plain text. A check-only verdict is often
+   * followed by the caller retyping the command into a shell, so there they stay blocked.
+   */
+  runsWithoutShell?: boolean;
 }
 
 export interface SafetyDecision {
@@ -19,6 +25,9 @@ export interface SafetyDecision {
 const SHELL_OPERATORS = ['&&', '||', ';', '|', '<', '>'];
 const DELETE_COMMANDS = new Set(['rm', 'del', 'erase', 'rmdir', 'rd', 'remove-item', 'ri', 'shred']);
 const SHELL_ONLY_DELETES = new Set(['del', 'erase', 'rd', 'remove-item', 'ri']);
+const MOVE_COMMANDS = new Set(['mv', 'move', 'move-item', 'mi']);
+const SHELL_ONLY_MOVES = new Set(['move', 'move-item', 'mi']);
+const MV_LONG_SWITCHES = new Set(['--force', '--no-clobber', '--verbose', '--interactive', '--update', '--no-target-directory']);
 const REMOVE_ITEM_TARGET_FLAGS = new Set(['-path', '-literalpath']);
 const REMOVE_ITEM_TARGET_PREFIXES = ['-path:', '-literalpath:'];
 const REMOVE_ITEM_SWITCHES = new Set(['-recurse', '-force', '-whatif', '-verbose']);
@@ -226,41 +235,73 @@ function realPathOrNull(value: string): string | null {
   }
 }
 
-function assessDelete(command: string, args: readonly string[], ctx: SafetyContext): SafetyDecision {
-  const parsed = deleteTargets(command, args);
-  if (parsed.reason) return block(command, true, parsed.reason);
-  const rawTargets = parsed.targets;
-  if (rawTargets.length === 0) return block(command, true, 'delete command has no explicit target path');
+/**
+ * `mv` operands, sources and destination alike: moving a file out of the project loses it
+ * here, and moving onto a file replaces it, so every operand gets the delete-path checks.
+ */
+function moveTargets(args: readonly string[]): ParsedTargets {
+  const targets: string[] = [];
+  let operandsOnly = false;
+  for (const token of args) {
+    if (token.length === 0 || token.includes('\0')) return { targets: [], reason: 'move operand must be a nonempty path without NUL characters' };
+    if (operandsOnly) {
+      targets.push(token);
+    } else if (token === '--') {
+      operandsOnly = true;
+    } else if (/^-[finvuT]+$/.test(token) || MV_LONG_SWITCHES.has(token)) {
+      continue;
+    } else if (token.startsWith('-') || token.startsWith('/')) {
+      return { targets: [], reason: `unsupported or ambiguous mv option: ${token}; use explicit paths and supported flags` };
+    } else {
+      targets.push(token);
+    }
+  }
+  if (targets.length < 2) return { targets: [], reason: 'mv needs explicit source and destination paths' };
+  return { targets };
+}
 
+/** Each raw path, resolved and checked; a reason string when any of them may not be touched. */
+function checkTargets(rawTargets: readonly string[], ctx: SafetyContext, verb: string): { targets: string[] } | { reason: string } {
   const root = path.resolve(ctx.projectRoot);
   const targets: string[] = [];
   try {
     const physicalRoot = physicalPath(root);
     for (const rawTarget of rawTargets) {
       const problem = targetProblem(rawTarget);
-      if (problem !== null) return block(command, true, problem);
+      if (problem !== null) return { reason: problem };
       const target = resolvedPath(rawTarget, ctx.cwd);
-      if (isFilesystemRoot(target)) return block(command, true, `refusing to delete filesystem root: ${target}`);
-      if (comparePath(target) === comparePath(root)) return block(command, true, `refusing to delete the project root: ${root}`);
-      if (!isSameOrInside(target, root)) return block(command, true, `refusing to delete outside the project root: ${target}`);
+      if (isFilesystemRoot(target)) return { reason: `refusing to ${verb} filesystem root: ${target}` };
+      if (comparePath(target) === comparePath(root)) return { reason: `refusing to ${verb} the project root: ${root}` };
+      if (!isSameOrInside(target, root)) return { reason: `refusing to ${verb} outside the project root: ${target}` };
       const physicalTarget = physicalDeleteTarget(rawTarget, ctx.cwd);
-      if (comparePath(physicalTarget) === comparePath(physicalRoot)) return block(command, true, 'refusing to delete the physical project root');
-      if (!isSameOrInside(physicalTarget, physicalRoot)) return block(command, true, `refusing to delete outside the physical project root (symlink or junction parent): ${target}`);
+      if (comparePath(physicalTarget) === comparePath(physicalRoot)) return { reason: `refusing to ${verb} the physical project root` };
+      if (!isSameOrInside(physicalTarget, physicalRoot)) return { reason: `refusing to ${verb} outside the physical project root (symlink or junction parent): ${target}` };
       // The real path also catches 8.3 short names such as GIT~1.
       const real = realPathOrNull(target);
       const guarded = protectedDir(target, root) ?? protectedDir(physicalTarget, physicalRoot)
         ?? (real === null ? undefined : protectedDir(real, physicalRoot));
-      if (guarded !== undefined) return block(command, true, `refusing to delete inside the protected ${guarded} directory: ${target}`);
+      if (guarded !== undefined) return { reason: `refusing to ${verb} inside the protected ${guarded} directory: ${target}` };
       targets.push(target);
     }
   } catch (error: unknown) {
-    return block(command, true, `cannot verify physical delete paths: ${error instanceof Error ? error.message : String(error)}`);
+    return { reason: `cannot verify physical ${verb} paths: ${error instanceof Error ? error.message : String(error)}` };
   }
+  return { targets };
+}
 
-  if (SHELL_ONLY_DELETES.has(command) || (command === 'rmdir' && process.platform === 'win32')) {
-    return block(command, true, `${command} is shell-only and cannot run with shell: false; use a standalone executable such as rm, or review and run the builtin yourself in your terminal`);
+function assessDelete(command: string, args: readonly string[], ctx: SafetyContext): SafetyDecision {
+  const moving = MOVE_COMMANDS.has(command);
+  const parsed = moving ? moveTargets(args) : deleteTargets(command, args);
+  if (parsed.reason) return block(command, true, parsed.reason);
+  if (parsed.targets.length === 0) return block(command, true, 'delete command has no explicit target path');
+
+  const checked = checkTargets(parsed.targets, ctx, moving ? 'move' : 'delete');
+  if ('reason' in checked) return block(command, true, checked.reason);
+
+  if (SHELL_ONLY_DELETES.has(command) || SHELL_ONLY_MOVES.has(command) || (command === 'rmdir' && process.platform === 'win32')) {
+    return block(command, true, `${command} is shell-only and cannot run with shell: false; use a standalone executable such as rm or mv, or review and run the builtin yourself in your terminal`);
   }
-  return allow(command, true, targets, ['destructive command is limited to explicit paths inside the project root']);
+  return allow(command, true, checked.targets, [`destructive command is limited to explicit paths inside the project root`]);
 }
 
 /** `--fo` stands for `--force`: git accepts any unambiguous prefix of a long option. */
@@ -358,8 +399,13 @@ export function assessCommandSafety(argv: readonly string[], ctx: SafetyContext)
   const command = normalizeCommand(commandArg);
   const args = argv.slice(1);
 
-  const operator = argv.find(hasShellOperator);
-  if (operator !== undefined) return block(command, false, `shell operator is not allowed in guarded commands: ${operator}`);
+  const standalone = argv.find((token) => SHELL_OPERATORS.includes(token));
+  if (standalone !== undefined) return block(command, false, `shell operator is not allowed in guarded commands: ${standalone}`);
+  const embedded = ctx.runsWithoutShell === true ? undefined : argv.find(hasShellOperator);
+  if (embedded !== undefined) {
+    return block(command, false, `shell operator is not allowed in guarded commands: ${embedded}. ` +
+      'If it is plain text (a message or format), run the command through `cws safe-run -- ...`, which passes arguments without a shell.');
+  }
 
   const launcher = LAUNCHERS.find((entry) => entry.pattern.test(command));
   if (launcher !== undefined) return block(command, true, launcher.reason);
@@ -367,7 +413,7 @@ export function assessCommandSafety(argv: readonly string[], ctx: SafetyContext)
   const problem = COMMAND_RULES[command]?.(args) ?? null;
   if (problem !== null) return block(command, true, problem);
 
-  if (DELETE_COMMANDS.has(command)) return assessDelete(command, args, ctx);
+  if (DELETE_COMMANDS.has(command) || MOVE_COMMANDS.has(command)) return assessDelete(command, args, ctx);
 
   return allow(command, false, [], ['no destructive filesystem pattern detected']);
 }
