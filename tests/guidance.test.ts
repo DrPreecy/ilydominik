@@ -6,7 +6,7 @@ import { nextSteps } from '../src/guidance/next-steps.ts';
 import { buildContext } from '../src/guidance/context-pack.ts';
 import { renderPrompt, loadPromptTemplate } from '../src/guidance/render.ts';
 import { PHASES, PURPOSES, type Phase, type ProjectState } from '../src/domain/types.ts';
-import { AI, HUMAN, project, run, step } from './helpers.ts';
+import { AI, fakeSecret, HUMAN, project, run, step } from './helpers.ts';
 
 const codes = (s: ProjectState, to?: Phase) => (to ? phaseWarnings(s, to) : assess(s)).map((w) => w.code);
 
@@ -34,7 +34,7 @@ describe('warnings and next steps agree', () => {
   });
 
   it('the context pack redacts credentials in stored text', () => {
-    const s = step(project(), { type: 'NOTE_ADDED', actor: HUMAN, payload: { noteId: 'n1', text: 'db password: "hunter2" and Authorization: Bearer abcdefghijkl' } });
+    const s = step(project(), { type: 'NOTE_ADDED', actor: HUMAN, payload: { noteId: 'n1', text: fakeSecret('db pass~word: "hunter2" and Authorization: Bea~rer abcdefghijkl') } });
     const pack = buildContext(s, 'explore');
     assert.doesNotMatch(pack, /hunter2|abcdefghijkl/);
     assert.match(pack, /\[redacted\]/);

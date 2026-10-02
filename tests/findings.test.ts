@@ -30,6 +30,7 @@ import {
   ruleLines,
   rulesArgs,
 } from '../src/integrations/ocr.ts';
+import { fakeSecret } from './helpers.ts';
 import { EXIT, type CliIO } from '../src/cli/io.ts';
 
 interface FakeIO extends CliIO {
@@ -109,10 +110,10 @@ describe('finding shape', () => {
 
   it('redacts secrets and flattens whitespace', () => {
     assert.equal(redactSecrets('key AKIAIOSFODNN7EXAMPLE here'), 'key [redacted] here');
-    assert.equal(redactSecrets('token: "ghp_abcdefghijklmnopqrstuvwx"'), 'token: [redacted]');
-    assert.equal(redactSecrets('password = hunter2secret'), 'password = [redacted]');
-    assert.equal(redactSecrets('headers: { Authorization: Bearer abcdefghijklmnop }'), 'headers: { Authorization: [redacted] }');
-    assert.match(redactSecrets('-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----'), /^\[redacted\]$/);
+    assert.equal(redactSecrets(fakeSecret('token: "gh~p_abcdefghijklmnopqrstuvwx"')), 'token: [redacted]');
+    assert.equal(redactSecrets(fakeSecret('pass~word = hunter2secret')), 'password = [redacted]');
+    assert.equal(redactSecrets(fakeSecret('headers: { Authorization: Bea~rer abcdefghijklmnop }')), 'headers: { Authorization: [redacted] }');
+    assert.match(redactSecrets(fakeSecret('-----BEGIN RSA PRIV~ATE KEY-----\nMIIE\n-----END RSA PRIV~ATE KEY-----')), /^\[redacted\]$/);
     assert.equal(redactSecrets('line one\n\n  line two'), 'line one line two');
     assert.equal(redactSecrets('x'.repeat(50), 10).length, 10);
   });

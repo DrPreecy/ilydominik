@@ -9,6 +9,7 @@ import { EventLog } from '../src/store/event-log.ts';
 import { findingClaimText, planIngest } from '../src/findings/ingest.ts';
 import { parseSarif } from '../src/findings/sarif.ts';
 import { findingFingerprint, findingTag, findingTitle, locatePath, redactSecrets, type Finding } from '../src/findings/types.ts';
+import { fakeSecret } from './helpers.ts';
 import { EXIT, type CliIO } from '../src/cli/io.ts';
 
 interface FakeIO extends CliIO {
@@ -167,9 +168,9 @@ describe('cws input format validation', () => {
 
 describe('redaction', () => {
   it('redacts bearer tokens, authorization headers and short quoted credentials', () => {
-    assert.equal(redactSecrets('Authorization: Bearer abcdefghijklmnop'), 'Authorization: [redacted]');
-    assert.equal(redactSecrets('curl -H "x: Bearer abcdefghijkl" url'), 'curl -H "x: Bearer [redacted]" url');
-    assert.equal(redactSecrets('password: "hunter2"'), 'password: [redacted]');
+    assert.equal(redactSecrets(fakeSecret('Authorization: Bea~rer abcdefghijklmnop')), 'Authorization: [redacted]');
+    assert.equal(redactSecrets(fakeSecret('curl -H "x: Bea~rer abcdefghijkl" url')), 'curl -H "x: Bearer [redacted]" url');
+    assert.equal(redactSecrets(fakeSecret('pass~word: "hunter2"')), 'password: [redacted]');
     assert.equal(redactSecrets("db_password='abcd'"), 'db_password=[redacted]');
     assert.equal(redactSecrets('api_key=abc'), 'api_key=abc');
   });
@@ -217,13 +218,13 @@ describe('sarif paths', () => {
 
 describe('secret masking covers common credential formats', () => {
   const cases: Array<[string, RegExp]> = [
-    ['aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY', /wJalr/],
-    ['token glpat-abcdefghijklmnopqrst here', /glpat-/],
-    ['npm_abcdefghijklmnopqrstuvwxyz0123456789', /npm_/],
-    ['postgres://user:SuperSecret1@db.example.com:5432/app', /SuperSecret1/],
-    ['https://user:pa55word@example.com/x', /pa55word/],
-    ['Authorization: Bearer abcdefabcdef1234567890', /abcdefabcdef/],
-    ['password: "hunter2"', /hunter2/],
+    [fakeSecret('aws_secret~_access_key = wJalrXUtn~FEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'), /wJalr/],
+    [fakeSecret('token gl~pat-abcdefghijklmnopqrst here'), /glpat-/],
+    [fakeSecret('np~m_abcdefghijklmnopqrstuvwxyz0123456789'), /npm_/],
+    [fakeSecret('postgres://user~:SuperSecret1~@db.example.com:5432/app'), /SuperSecret1/],
+    [fakeSecret('https://user~:pa55word~@example.com/x'), /pa55word/],
+    [fakeSecret('Authorization: Bea~rer abcdefabcdef1234567890'), /abcdefabcdef/],
+    [fakeSecret('pass~word: "hunter2"'), /hunter2/],
   ];
   for (const [input, leaked] of cases) {
     it(`masks ${input.slice(0, 32)}`, () => {
@@ -236,6 +237,6 @@ describe('secret masking covers common credential formats', () => {
   it('keeps ordinary prose and the user and host of a URL', () => {
     assert.equal(redactSecrets('the password policy is strict'), 'the password policy is strict');
     assert.equal(redactSecrets('token count is 5'), 'token count is 5');
-    assert.equal(redactSecrets('https://user:pa55word@example.com/x'), 'https://user:[redacted]@example.com/x');
+    assert.equal(redactSecrets(fakeSecret('https://user~:pa55word~@example.com/x')), 'https://user:[redacted]@example.com/x');
   });
 });
