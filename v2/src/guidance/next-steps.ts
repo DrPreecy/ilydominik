@@ -15,6 +15,7 @@ export function nextSteps(state: ProjectState, limit = 3): NextStep[] {
   const sorted = [...hits].sort((a, b) => b.priority - a.priority);
   const top = sorted.slice(0, limit);
   const guaranteed = sorted.find((s) => GUARANTEED_RULES.includes(s.ruleId));
-  if (!guaranteed || top.includes(guaranteed) || top.length === 0) return top;
+  // With a single slot the top-ranked step wins, so `status` and `cws prompt 1` always agree.
+  if (limit < 2 || !guaranteed || top.includes(guaranteed) || top.length === 0) return top;
   return [...top.slice(0, -1), guaranteed];
 }

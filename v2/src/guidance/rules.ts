@@ -78,7 +78,7 @@ const unprocessedNotes: Rule = {
     const refs = state.notes.filter((n) => !used.has(n.id)).map((n) => n.id);
     if (refs.length === 0) return null;
     if (state.phase === 'EXPLORATION') {
-      return { title: 'When you feel done dumping: make sense of your notes', reason: `${refs.length} notes are waiting. No rush, getting everything out comes first.`, refs, priority: EXPLORATION_NOTES_PRIORITY };
+      return { title: 'When you feel done dumping: make sense of your notes', reason: `${refs.length} ${refs.length === 1 ? 'note is' : 'notes are'} waiting. No rush, getting everything out comes first.`, refs, priority: EXPLORATION_NOTES_PRIORITY };
     }
     return { title: 'Make sense of your raw notes', reason: `${refs.length} of your notes have not been turned into clear statements yet.`, refs };
   },

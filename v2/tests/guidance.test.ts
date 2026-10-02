@@ -155,6 +155,12 @@ describe('next steps (§23: guidance, not instruction)', () => {
     assert.equal(nextSteps(s)[0]!.ruleId, 'unprocessed-notes');
   });
 
+  it('the single top step equals option 1 of the full list (status and `cws prompt 1` must agree)', () => {
+    const s = step(project(), { type: 'PROPOSAL_SUBMITTED', actor: AI, payload: { proposalId: 'p1', item: { kind: 'claim', type: 'FACT', text: 'f' } } });
+    assert.deepEqual(nextSteps(s, 1)[0], nextSteps(s, 3)[0]);
+    assert.equal(nextSteps(s, 1)[0]!.purpose, 'review');
+  });
+
   it('steps are sorted by priority and unique by ruleId; limit respected', () => {
     let s = withRiskyAssumption('OPEN');
     s = step(s, { type: 'NOTE_ADDED', actor: HUMAN, payload: { noteId: 'n1', text: 'idea' } });
