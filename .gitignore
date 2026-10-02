@@ -42,3 +42,8 @@ Thumbs.db
 *.log
 scratchpad/
 temp/
+
+# CWS v2
+v2/node_modules/
+v2/dist/
+v2/coverage/
