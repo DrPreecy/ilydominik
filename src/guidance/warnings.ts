@@ -6,6 +6,25 @@ const LATE_PHASES: readonly Phase[] = ['IMPLEMENTATION', 'LAUNCH', 'POST_LAUNCH'
 const SEVERITY_ORDER: Record<WarningSeverity, number> = { serious: 0, caution: 1, info: 2 };
 const PHASE_WARNING_CODES = ['UNTESTED_RISK', 'FALSIFIED_PREMISE', 'OPEN_CRITICAL_UNKNOWN', 'PHASE_SKIP', 'OVERRIDE_UNRESOLVED'];
 
+/** Every code `assess(state)` can raise without an intended action; each needs a next-step rule. */
+export const STATUS_WARNING_CODES = [
+  'UNTESTED_RISK',
+  'FALSIFIED_PREMISE',
+  'OPEN_CRITICAL_UNKNOWN',
+  'SUPPORTED_WITHOUT_EVIDENCE',
+  'OVERRIDE_UNRESOLVED',
+  'PENDING_PROPOSALS',
+  'UNCONFIRMED_AI_CLAIMS',
+] as const;
+
+/** Statuses only a human can set (directly or by accepting a proposal): the claim has had its verdict. */
+const VERDICTS: readonly Claim['status'][] = ['SUPPORTED', 'FALSIFIED', 'ANSWERED', 'RETIRED'];
+
+/** An AI claim nobody has looked at yet: not confirmed, and no human verdict on it. */
+export function awaitsReview(c: Claim): boolean {
+  return c.createdBy.kind === 'ai' && !c.confirmed && !VERDICTS.includes(c.status);
+}
+
 export function shorten(text: string, max = MAX_TEXT): string {
   const flat = text.replace(/\s+/g, ' ').trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
@@ -80,7 +99,7 @@ function pendingProposals(state: ProjectState): Warning[] {
 }
 
 function unconfirmedAi(state: ProjectState): Warning[] {
-  const claims = state.claims.filter((c) => c.createdBy.kind === 'ai' && !c.confirmed && c.status !== 'RETIRED');
+  const claims = state.claims.filter(awaitsReview);
   if (claims.length === 0) return [];
   const message = `${claims.length} ${plural(claims.length, 'AI guess has', 'AI guesses have')} not been confirmed by you yet: ${quoteList(claims)}.`;
   return [warning('UNCONFIRMED_AI_CLAIMS', 'info', message, claims.map((c) => c.id))];

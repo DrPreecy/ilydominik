@@ -3,6 +3,7 @@ import type { Command } from 'commander';
 import { newId } from '../../domain/ids.ts';
 import { parseEventInput } from '../../domain/schema.ts';
 import type { EventInput, Proposal } from '../../domain/types.ts';
+import { FINDING_MARKER, FINDING_MARKER_RESERVED } from '../../findings/types.ts';
 import { describeProposal } from '../describe.ts';
 import { actorLabel, aiClaimLine, oneLine, pendingProposals, summarizeItem, unconfirmedAiClaims } from '../format.ts';
 import { actorOf, confirmDecision, fail, openLog, requireHuman, say, type Env } from '../human.ts';
@@ -29,6 +30,8 @@ function entriesOf(parsed: unknown): unknown[] {
 
 function toInput(env: Env, entry: unknown, index: number, agent: string): EventInput {
   if (!isRecord(entry) || !isRecord(entry.item)) fail(env, `error: proposal #${index + 1} needs an "item" object`);
+  const { text } = entry.item;
+  if (typeof text === 'string' && text.trimStart().startsWith(FINDING_MARKER)) fail(env, FINDING_MARKER_RESERVED);
   const rationale = typeof entry.rationale === 'string' && entry.rationale.trim() !== '' ? entry.rationale : undefined;
   const payload = { proposalId: newId('pr'), item: entry.item, ...(rationale ? { rationale } : {}) };
   try {

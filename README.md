@@ -26,7 +26,7 @@ No local Docker or strong PC needed. On GitHub, choose **Code → Codespaces →
 | save everything to one file | `cws export --to my-project.json.gz` |
 | restore it in a new Codespace | `cws import my-project.json.gz` |
 
-Import only adds newer events. If both sides changed, it stops; `--replace` overwrites local memory after you confirm.
+Import only adds newer events. If both sides changed, or local memory fails its integrity check, it stops; `--replace` overwrites local memory after you confirm (also to roll back to an older backup).
 
 ## Start a Project
 
@@ -62,15 +62,15 @@ Code review is split so the deterministic part is a tool's job and the judgement
 
 1. `cws review-code` runs [Open Code Review](https://github.com/alibaba/open-code-review) in delegation mode. That needs no model key: it only lists which files would be reviewed and which rule applies to each file, and every file must end as reviewed or as an explained skip.
 2. Your agent reviews the files with its own model and records what it finds: `cws findings ingest --agent <name> --format cws -` (JSON on stdin), or point it at tool output such as `--format sarif` for Semgrep, CodeQL or `ocr review --format sarif`.
-3. Every finding becomes an AI hypothesis in the log with a severity-derived risk and a fingerprint, so re-running a tool adds nothing twice. You confirm, fix or mark it false with `cws review` — and that verdict is what later tells CWS how much to trust a tool.
+3. Every finding becomes an AI hypothesis in the log with a severity-derived risk and a fingerprint, so re-running a tool records only what is new (at most `--limit` per run). In `cws review` you mark it supported, falsified or retired — and that verdict is what later tells CWS how much to trust a tool.
 
-Secrets are redacted before anything is stored, and OCR is installed separately (`npm i -g @alibaba-group/open-code-review`). Without it, `cws doctor` says so and the rest of CWS still works.
+Secrets are redacted before anything is stored and in every prompt context, and OCR is installed separately (`npm i -g @alibaba-group/open-code-review`). Without it, `cws doctor` says so and the rest of CWS still works.
 
 ## Sandbox (optional)
 
 `safe-run` guards a command; it does not isolate it. When [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) is installed, CWS can put agent work in a sandbox whose network access is a file you approve:
 
-1. `cws sandbox policy --rule api.github.com:443` writes `.cws/sandbox/policy.yaml` and records the decision. Nothing else is reachable — no wildcards, no query strings, no plain-TCP bypass. This is a human command.
+1. `cws sandbox policy --rule api.github.com:443` records the rule (with a confirmation code) as a decision. Nothing else is reachable — no wildcards, no query strings, no plain-TCP bypass, no local or cloud-metadata addresses. `.cws/sandbox/policy.yaml` is rebuilt from the approved rules before every run, so editing it by hand changes nothing.
 2. `cws sandbox run -- <command>` creates a sandbox with that policy, uploads the project, runs one command and reports its exit code. Add `--claim <id>` to attach the run as evidence.
 3. A request the sandbox is not allowed to make becomes a pending rule. `cws sandbox rules` lists them; `cws sandbox rules --approve <chunk-id>` (with a confirmation code) or `--reject <chunk-id> --reason "..."` answers one, and your answer is recorded as a decision.
 
@@ -87,7 +87,8 @@ Without OpenShell, `cws sandbox status` says so and everything else keeps workin
 - An AI with shell access could forge entries. CWS makes that deliberate and visible with challenge codes and a hash-chained log, not impossible.
 - Human commands need a real terminal. Piping text into `cws dump -` as a human is refused; type it or pass it as an argument.
 - There is no MCP server yet; agents use the CLI in their terminal.
-- `safe-run` is an advisory native-executable guard, not a sandbox.
+- `safe-run` is an advisory native-executable guard, not a sandbox. It blocks shells, interpreters and wrappers (`node -e`, `npx`, `env`, `wsl`, ...), destructive git forms (`reset --hard`, force push, `clean`, aliases) and deleting `.git` or `.cws`, but it cannot see what an allowed program does, for example an edited npm script.
+- Tool paths come only from `CWS_TOOL_OCR`, `CWS_TOOL_OPENSHELL` and `CWS_TOOL_PROVER`, never from files in the repository.
 
 ## Develop
 

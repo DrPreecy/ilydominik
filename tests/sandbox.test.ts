@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { runCli } from '../src/cli/app.ts';
 import { EXIT, type CliIO } from '../src/cli/io.ts';
-import { accessDecisionPayload, reportLines, ruleDecisionPayload, runEvidencePayload } from '../src/cli/commands/sandbox.ts';
+import { accessDecisionPayload, hostPathFor, reportLines, ruleDecisionPayload, runEvidencePayload, uploadSpec } from '../src/cli/commands/sandbox.ts';
 import { EventLog } from '../src/store/event-log.ts';
 import type { RunResult } from '../src/integrations/exec.ts';
 import {
@@ -21,7 +21,7 @@ import {
   ruleRejectArgs,
   SANDBOX_NAME_MAX,
 } from '../src/integrations/openshell/args.ts';
-import { buildPolicy, parseRuleSpec, policyFor, ruleName, validateRule, validateRules, type SandboxNetworkRule } from '../src/integrations/openshell/policy.ts';
+import { buildPolicy, parseRules, parseRuleSpec, policyFor, ruleName, validateRule, validateRules, type SandboxNetworkRule } from '../src/integrations/openshell/policy.ts';
 
 interface FakeIO extends CliIO {
   out: string[];
@@ -34,6 +34,7 @@ beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cws-sandbox-'));
 });
 afterEach(async () => {
+  delete process.env['CWS_TOOL_OPENSHELL'];
   await fs.rm(dir, { recursive: true, force: true });
 });
 
@@ -77,8 +78,45 @@ const rulesFile = () => path.join(dir, '.cws', 'sandbox', 'rules.json');
 
 describe('sandbox: policy generation', () => {
   it('names rules in a greppable way', () => {
-    assert.equal(ruleName({ host: 'api.github.com', port: 443 }), 'allow_api_github_com_443');
-    assert.equal(ruleName({ host: 'api.github.com', port: 443, method: 'PUT' }), 'allow_api_github_com_443_put');
+    assert.match(ruleName({ host: 'api.github.com', port: 443 }), /^allow_api_github_com_443_[0-9a-f]{8}$/);
+    assert.match(ruleName({ host: 'api.github.com', port: 443, method: 'PUT' }), /^allow_api_github_com_443_put_[0-9a-f]{8}$/);
+  });
+
+  it('gives different rules different names, so no rule overwrites another', () => {
+    const get = (path: string): SandboxNetworkRule => ({ host: 'api.github.com', port: 443, protocol: 'rest', method: 'GET', path });
+    assert.notEqual(ruleName(get('/repos/a')), ruleName(get('/repos/c')));
+    assert.notEqual(ruleName({ host: 'a-b.com', port: 443 }), ruleName({ host: 'a.b.com', port: 443 }));
+    const policy = policyFor([get('/repos/a'), get('/repos/c'), get('/repos/a')]).text;
+    assert.equal(policy.match(/^ {2}allow_/gm)?.length, 2);
+  });
+
+  it('reads rules.json strictly and explains a bad entry instead of crashing', () => {
+    assert.deepEqual(parseRules([{ host: 'api.github.com', port: 443 }]), [{ host: 'api.github.com', port: 443 }]);
+    for (const [raw, pattern] of [
+      [[{ host: 5 }], /host/],
+      [[{ host: 'a.com', port: 443, access: 'full\n    tls: skip' }], /access/],
+      [[{ host: 'a.com', port: 443, protocol: 'tcp' }], /protocol/],
+      [[{ host: 'a.com', port: 443, tls: 'skip' }], /tls|unrecognized/i],
+      [[{ host: 'a.com', port: 443, protocol: 'rest', method: 'GET', path: '/x\n  - allow: {}' }], /path/],
+      [{ host: 'a.com' }, /array/i],
+    ] as const) {
+      assert.throws(() => parseRules(raw), (error: unknown) => error instanceof Error && !(error instanceof TypeError) && pattern.test(error.message), JSON.stringify(raw));
+    }
+  });
+
+  it('validates again when the YAML is built, whoever calls it', () => {
+    const injected = { host: 'a.com', port: 443, access: 'full\n    tls: skip' } as unknown as SandboxNetworkRule;
+    assert.throws(() => buildPolicy({ rules: [injected] }), /access/);
+    assert.match(String(validateRule({ host: 5 } as unknown as SandboxNetworkRule)), /host/);
+    assert.match(String(validateRule({ host: 'a.com', port: 443, method: 'GET', path: '/x' })), /protocol/);
+  });
+
+  it('refuses loopback, link-local and metadata hosts', () => {
+    for (const host of ['localhost', 'app.localhost', '127.0.0.1', '127.1.2.3', '0.0.0.0', '169.254.169.254', '169.254.1.1',
+      'metadata.google.internal', '2130706433', '0x7f.0.0.1', '127.000.0.1']) {
+      assert.notEqual(validateRule({ host, port: 80 }), null, host);
+    }
+    assert.equal(validateRule({ host: '8.8.8.8', port: 443 }), null);
   });
 
   it('denies everything when no rule was approved', () => {
@@ -95,6 +133,7 @@ describe('sandbox: policy generation', () => {
     ]).text;
     assert.match(policy, /network_policies:/);
     assert.ok(policy.indexOf('allow_api_github_com_443_put') < policy.indexOf('allow_zebra_example_com_443'));
+    assert.ok(policy.indexOf('allow_api_github_com_443_put') > 0);
     assert.match(policy, /method: PUT/);
     assert.match(policy, /path: \/repos\/me\/\*\*/);
     assert.match(policy, /binaries:\n {6}- path: \/usr\/bin\/gh/);
@@ -197,8 +236,18 @@ describe('sandbox: openshell arguments', () => {
     assert.throws(() => ruleApproveArgs('sb', '  '), /no chunk id/);
   });
 
-  it('mounts the project at /sandbox', () => {
-    assert.equal(projectUpload('E:\\dev\\proj'), 'E:\\dev\\proj:/sandbox');
+  it('mounts the project at /sandbox and refuses a host path with a colon', () => {
+    assert.equal(projectUpload('/w/proj'), '/w/proj:/sandbox');
+    assert.throws(() => projectUpload('E:\\dev\\proj'), /colon/);
+  });
+
+  it('translates host paths for the sandbox mode', () => {
+    assert.equal(uploadSpec('wsl', 'E:\\dev\\proj', 'win32'), '/mnt/e/dev/proj:/sandbox');
+    assert.equal(uploadSpec('local', 'E:\\dev\\proj', 'win32'), '.:/sandbox');
+    assert.equal(uploadSpec('local', '/w/proj', 'linux'), '/w/proj:/sandbox');
+    assert.equal(hostPathFor('wsl', 'E:\\p\\.cws\\sandbox\\policy.yaml'), '/mnt/e/p/.cws/sandbox/policy.yaml');
+    assert.equal(hostPathFor('local', 'E:\\p\\policy.yaml'), 'E:\\p\\policy.yaml');
+    assert.throws(() => hostPathFor('wsl', 'relative\\policy.yaml'), /WSL/);
   });
 });
 
@@ -247,9 +296,18 @@ describe('cws sandbox: policy', () => {
     assert.equal(await fs.readFile(rulesFile(), 'utf8').catch(() => null), null);
   });
 
+  it('asks for the confirmation code before granting network access', async () => {
+    await initProject();
+    const io = human(['nope']);
+    assert.equal(await cli(io, 'sandbox', 'policy', '--rule', 'api.github.com:443'), EXIT.NEEDS_HUMAN);
+    assert.match(errText(io), /Not confirmed/);
+    assert.equal(await fs.readFile(rulesFile(), 'utf8').catch(() => null), null);
+    assert.equal((await EventLog.open(dir)).state.decisions.length, 0);
+  });
+
   it('writes the policy and records the decision', async () => {
     await initProject();
-    const io = human();
+    const io = human(['K7Q']);
     assert.equal(await cli(io, 'sandbox', 'policy', '--rule', 'api.github.com:443'), EXIT.OK);
     const written = await fs.readFile(policyFile(), 'utf8');
     assert.match(written, /allow_api_github_com_443/);
@@ -263,9 +321,9 @@ describe('cws sandbox: policy', () => {
 
   it('adds to the rules instead of replacing them', async () => {
     await initProject();
-    assert.equal(await cli(human(), 'sandbox', 'policy', '--rule', 'api.github.com:443'), EXIT.OK);
-    assert.equal(await cli(human(), 'sandbox', 'policy', '--rule', 'api.github.com:443'), EXIT.OK);
-    assert.equal(await cli(human(), 'sandbox', 'policy', '--rule', 'registry.npmjs.org:443'), EXIT.OK);
+    assert.equal(await cli(human(['K7Q']), 'sandbox', 'policy', '--rule', 'api.github.com:443'), EXIT.OK);
+    assert.equal(await cli(human(['K7Q']), 'sandbox', 'policy', '--rule', 'api.github.com:443'), EXIT.OK);
+    assert.equal(await cli(human(['K7Q']), 'sandbox', 'policy', '--rule', 'registry.npmjs.org:443'), EXIT.OK);
     const rules = JSON.parse(await fs.readFile(rulesFile(), 'utf8')) as SandboxNetworkRule[];
     assert.equal(rules.length, 2);
     assert.match(await fs.readFile(policyFile(), 'utf8'), /allow_registry_npmjs_org_443/);
@@ -281,7 +339,7 @@ describe('cws sandbox: policy', () => {
 
   it('shows the current policy', async () => {
     await initProject();
-    assert.equal(await cli(human(), 'sandbox', 'policy', '--rule', 'api.github.com:443'), EXIT.OK);
+    assert.equal(await cli(human(['K7Q']), 'sandbox', 'policy', '--rule', 'api.github.com:443'), EXIT.OK);
     const io = human();
     assert.equal(await cli(io, 'sandbox', 'policy', '--show'), EXIT.OK);
     assert.match(text(io), /allow_api_github_com_443/);
@@ -293,19 +351,58 @@ describe('cws sandbox: policy', () => {
     assert.equal(await cli(io, 'sandbox', 'policy', '--show'), EXIT.OK);
     assert.match(text(io), /No policy yet/);
   });
+
+  it('shows the policy cws will use, not a file someone edited', async () => {
+    await initProject();
+    await fs.mkdir(path.dirname(policyFile()), { recursive: true });
+    await fs.writeFile(policyFile(), 'network_policies:\n  everything: {}\n');
+    const io = human();
+    assert.equal(await cli(io, 'sandbox', 'policy', '--show'), EXIT.OK);
+    assert.match(text(io), /# No network access was approved/);
+    assert.doesNotMatch(text(io), /everything/);
+    assert.match(text(io), /differs/);
+  });
+
+  it('explains a tampered rules file instead of crashing', async () => {
+    await initProject();
+    await fs.mkdir(path.dirname(rulesFile()), { recursive: true });
+    await fs.writeFile(rulesFile(), JSON.stringify([{ host: 5 }]));
+    for (const args of [['sandbox', 'status'], ['sandbox', 'policy', '--show']]) {
+      const io = human();
+      await cli(io, ...args);
+      assert.match(text(io) + errText(io), /rules\.json.*host/, args.join(' '));
+      assert.doesNotMatch(text(io) + errText(io), /TypeError|Cannot read/, args.join(' '));
+    }
+  });
 });
 
-describe('cws sandbox: openshell missing', () => {
-  /** Run `fn` with no PATH, so `openshell` cannot be found on this machine either. */
-  async function withoutPath<T>(fn: () => Promise<T>): Promise<T> {
-    const original = process.env['PATH'];
-    process.env['PATH'] = '';
-    try {
-      return await fn();
-    } finally {
-      process.env['PATH'] = original;
-    }
+/** Run fn with no PATH, so openshell cannot be found on this machine either. */
+async function withoutPath<T>(fn: () => Promise<T>): Promise<T> {
+  const original = process.env['PATH'];
+  process.env['PATH'] = '';
+  try {
+    return await fn();
+  } finally {
+    process.env['PATH'] = original;
   }
+}
+
+/** A stand-in for openshell that prints its arguments; it runs through node on every platform. */
+async function useStub(mode = 'local'): Promise<void> {
+  const bin = path.join(dir, 'bin');
+  await fs.mkdir(bin, { recursive: true });
+  const file = path.join(bin, 'openshell.mjs');
+  await fs.writeFile(
+    file,
+    "process.stdout.write(process.argv.slice(2).join(' ') + '\\n');\n" +
+      "process.stderr.write('error: no gateway\\n');\n" +
+      "process.exit(Number(process.env.CWS_FAKE_EXIT ?? 0));\n",
+  );
+  process.env['CWS_TOOL_OPENSHELL'] = file;
+  await fs.writeFile(path.join(dir, '.cws', 'integrations.json'), JSON.stringify({ version: 1, sandbox: { mode } }));
+}
+
+describe('cws sandbox: openshell missing', () => {
 
   it('explains what to do instead of failing with a spawn error', async () => {
     await initProject();
@@ -331,15 +428,26 @@ describe('cws sandbox: openshell missing', () => {
     assert.match(errText(io), /nothing to run/);
   });
 
-  it('reports a configured openshell path that no longer exists', async () => {
+  it('reports an openshell path from CWS_TOOL_OPENSHELL that no longer exists', async () => {
     await initProject();
-    await fs.writeFile(
-      path.join(dir, '.cws', 'integrations.json'),
-      JSON.stringify({ version: 1, tools: { openshell: path.join(dir, 'missing', 'openshell') } }),
-    );
+    process.env['CWS_TOOL_OPENSHELL'] = path.join(dir, 'missing', 'openshell');
     const io = human();
     assert.equal(await cli(io, 'sandbox', 'up'), EXIT.ERROR);
-    assert.match(errText(io), /does not exist/);
+    assert.match(errText(io), /CWS_TOOL_OPENSHELL does not exist/);
+  });
+
+  it('ignores an openshell path planted in the repository config', async () => {
+    await initProject();
+    await useStub();
+    delete process.env['CWS_TOOL_OPENSHELL'];
+    await fs.writeFile(
+      path.join(dir, '.cws', 'integrations.json'),
+      JSON.stringify({ version: 1, sandbox: { mode: 'local' }, tools: { openshell: path.join(dir, 'bin', 'openshell.mjs') } }),
+    );
+    const io = human();
+    assert.equal(await withoutPath(() => cli(io, 'sandbox', 'run', '--', 'ls')), EXIT.ERROR);
+    assert.match(errText(io), /openshell. was not found/);
+    assert.doesNotMatch(text(io), /sandbox create/);
   });
 
   it('still shows status without openshell', async () => {
@@ -423,15 +531,10 @@ describe('cws sandbox: reporting and recording', () => {
 // a stand-in for openshell
 // ---------------------------------------------------------------------------
 
-/** These need a real executable; on Windows every candidate would be a batch shim. */
-const posixOnly = { skip: process.platform === 'win32' ? 'needs a real executable, not a batch shim' : false };
-
 /** Node itself works as a stand-in for openshell on every platform: it is a real executable. */
 async function useNodeAsOpenshell(): Promise<void> {
-  await fs.writeFile(
-    path.join(dir, '.cws', 'integrations.json'),
-    JSON.stringify({ version: 1, tools: { openshell: process.execPath } }),
-  );
+  process.env['CWS_TOOL_OPENSHELL'] = process.execPath;
+  await fs.writeFile(path.join(dir, '.cws', 'integrations.json'), JSON.stringify({ version: 1, sandbox: { mode: 'local' } }));
 }
 
 async function claim(): Promise<string> {
@@ -490,8 +593,8 @@ describe('cws sandbox: openshell present but failing', () => {
     await useNodeAsOpenshell();
     const io = human();
     assert.notEqual(await cli(io, 'sandbox', 'rules'), EXIT.OK);
-    assert.match(text(io), /cws sandbox approve/);
-    assert.match(text(io), /cws sandbox reject/);
+    assert.match(text(io), /cws sandbox rules --approve <chunk-id>/);
+    assert.match(text(io), /cws sandbox rules --reject <chunk-id>/);
   });
 
   it('does not record a rule decision when the tool refuses', async () => {
@@ -505,20 +608,61 @@ describe('cws sandbox: openshell present but failing', () => {
 });
 
 describe('cws sandbox: with openshell', () => {
-  /** A stand-in that prints the arguments it was called with, on one line. */
-  async function stubOpenshell(): Promise<void> {
-    const bin = path.join(dir, 'bin');
-    await fs.mkdir(bin, { recursive: true });
-    const file = path.join(bin, 'openshell');
-    await fs.writeFile(file, '#!/bin/sh\nprintf "%s\\n" "$*"\nprintf "error: no gateway\\n" >&2\nexit ${CWS_FAKE_EXIT:-0}\n');
-    await fs.chmod(file, 0o755);
-    await fs.writeFile(
-      path.join(dir, '.cws', 'integrations.json'),
-      JSON.stringify({ version: 1, tools: { openshell: file } }),
-    );
-  }
+  const stubOpenshell = (): Promise<void> => useStub();
 
-  it('runs a command in a fresh sandbox and reports it', posixOnly, async () => {
+  it('regenerates a planted policy file from the approved rules before every run', async () => {
+    await initProject();
+    await stubOpenshell();
+    await fs.mkdir(path.dirname(policyFile()), { recursive: true });
+    await fs.writeFile(policyFile(), 'network_policies:\n  everything:\n    endpoints:\n      - host: "*"\n');
+    const io = human();
+    assert.equal(await cli(io, 'sandbox', 'run', '--', 'ls'), EXIT.OK);
+    const written = await fs.readFile(policyFile(), 'utf8');
+    assert.match(written, /# No network access was approved/);
+    assert.doesNotMatch(written, /everything/);
+  });
+
+  it('refuses to start from a tampered rules file', async () => {
+    await initProject();
+    await stubOpenshell();
+    await fs.mkdir(path.dirname(rulesFile()), { recursive: true });
+    await fs.writeFile(rulesFile(), JSON.stringify([{ host: 'a.com', port: 443, access: 'full\n    tls: skip' }]));
+    for (const args of [['sandbox', 'run', '--', 'ls'], ['sandbox', 'up']]) {
+      const io = human();
+      assert.equal(await cli(io, ...args), EXIT.ERROR, args.join(' '));
+      assert.match(errText(io), /rules\.json.*access/, args.join(' '));
+      assert.doesNotMatch(text(io), /sandbox create/, args.join(' '));
+    }
+    assert.doesNotMatch(await fs.readFile(policyFile(), 'utf8').catch(() => ''), /tls: skip/);
+  });
+
+  it('does not start a sandbox when the sandbox mode is off', async () => {
+    await initProject();
+    await useStub('off');
+    for (const args of [['sandbox', 'run', '--', 'ls'], ['sandbox', 'up']]) {
+      const io = human();
+      assert.equal(await cli(io, ...args), EXIT.ERROR, args.join(' '));
+      assert.match(errText(io), /mode is off/, args.join(' '));
+      assert.doesNotMatch(text(io), /sandbox create/, args.join(' '));
+    }
+  });
+
+  it('attaching provider credentials is a human decision with a confirmation code', async () => {
+    await initProject();
+    await stubOpenshell();
+    const declined = agent();
+    assert.equal(await cli(declined, 'sandbox', 'up', '--provider', 'github'), EXIT.NEEDS_HUMAN);
+    const wrong = human(['nope']);
+    assert.equal(await cli(wrong, 'sandbox', 'up', '--provider', 'github'), EXIT.NEEDS_HUMAN);
+    assert.doesNotMatch(text(wrong), /sandbox create/);
+    const bad = human(['K7Q']);
+    assert.equal(await cli(bad, 'sandbox', 'up', '--provider', 'not a name'), EXIT.ERROR);
+    const io = human(['K7Q']);
+    assert.equal(await cli(io, 'sandbox', 'up', '--provider', 'github'), EXIT.OK);
+    assert.match(text(io), /--provider github/);
+  });
+
+  it('runs a command in a fresh sandbox and reports it', async () => {
     await initProject();
     await stubOpenshell();
 
@@ -530,7 +674,7 @@ describe('cws sandbox: with openshell', () => {
     assert.match(printed, /-- node --version/);
   });
 
-  it('keeps the sandbox when asked', posixOnly, async () => {
+  it('keeps the sandbox when asked', async () => {
     await initProject();
     await stubOpenshell();
     const io = human();
@@ -538,7 +682,7 @@ describe('cws sandbox: with openshell', () => {
     assert.doesNotMatch(text(io), /--no-keep/);
   });
 
-  it('writes the policy before the first run and passes the exit code through', posixOnly, async () => {
+  it('writes the policy before the first run and passes the exit code through', async () => {
     await initProject();
     await stubOpenshell();
     process.env['CWS_FAKE_EXIT'] = '3';
@@ -552,16 +696,16 @@ describe('cws sandbox: with openshell', () => {
     assert.match(await fs.readFile(policyFile(), 'utf8'), /# No network access was approved/);
   });
 
-  it('lists pending rules and explains how to answer one', posixOnly, async () => {
+  it('lists pending rules and explains how to answer one', async () => {
     await initProject();
     await stubOpenshell();
     const io = human();
     assert.equal(await cli(io, 'sandbox', 'rules'), EXIT.OK);
     assert.match(text(io), /rule get cws-.* --status pending/);
-    assert.match(text(io), /cws sandbox approve/);
+    assert.match(text(io), /cws sandbox rules --approve/);
   });
 
-  it('approve is a human decision with a confirmation code, and it is recorded', posixOnly, async () => {
+  it('approve is a human decision with a confirmation code, and it is recorded', async () => {
     await initProject();
     await stubOpenshell();
 
@@ -580,7 +724,7 @@ describe('cws sandbox: with openshell', () => {
     assert.equal(decision?.selected, 'approve chunk-1');
   });
 
-  it('records a rejection with the reason', posixOnly, async () => {
+  it('records a rejection with the reason', async () => {
     await initProject();
     await stubOpenshell();
     const io = human(['K7Q']);
@@ -589,10 +733,10 @@ describe('cws sandbox: with openshell', () => {
     assert.match((await EventLog.open(dir)).state.decisions[0]?.rationale ?? '', /too wide/);
   });
 
-  it('brings a sandbox up with the approved policy and uploads the project', posixOnly, async () => {
+  it('brings a sandbox up with the approved policy and uploads the project', async () => {
     await initProject();
     await stubOpenshell();
-    assert.equal(await cli(human(), 'sandbox', 'policy', '--rule', 'api.github.com:443'), EXIT.OK);
+    assert.equal(await cli(human(['K7Q']), 'sandbox', 'policy', '--rule', 'api.github.com:443'), EXIT.OK);
     const io = human();
     assert.equal(await cli(io, 'sandbox', 'up'), EXIT.OK);
     const printed = text(io);
@@ -602,7 +746,7 @@ describe('cws sandbox: with openshell', () => {
     assert.match(printed, /openshell sandbox connect cws-/);
   });
 
-  it('deletes the sandbox and shows its logs', posixOnly, async () => {
+  it('deletes the sandbox and shows its logs', async () => {
     await initProject();
     await stubOpenshell();
     const io = human();

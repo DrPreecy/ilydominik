@@ -2,7 +2,7 @@ import type { Claim, Proposal } from '../../domain/types.ts';
 import type { EventLog } from '../../store/event-log.ts';
 import { describeClaim, describeProposal } from '../describe.ts';
 import { pendingProposals, unconfirmedAiClaims } from '../format.ts';
-import { confirmDecision, openLog, requireHuman, say, type Env } from '../human.ts';
+import { confirmDecision, openLog, requireHuman, say, warn, type Env } from '../human.ts';
 import { acceptWithRisk, guarded, printRisk, proposalRisk, rejectOne } from '../proposal-ops.ts';
 
 const HUMAN = { kind: 'human' } as const;
@@ -13,6 +13,8 @@ interface Tally {
   rejected: number;
   confirmed: number;
   retired: number;
+  falsified: number;
+  supported: number;
   skipped: number;
 }
 
@@ -52,13 +54,34 @@ async function reviewProposal(env: Env, log: EventLog, p: Proposal, tally: Tally
   return 'continue';
 }
 
-async function claimAction(log: EventLog, c: Claim, key: string, tally: Tally): Promise<void> {
+/** Claim types that can be tested, so the human can give a verdict on them (as `cws mark` does). */
+const TESTABLE = new Set<Claim['type']>(['HYPOTHESIS', 'ASSUMPTION']);
+const VERDICTS = { f: 'FALSIFIED', s: 'SUPPORTED' } as const;
+
+/** A verdict is a decision of its own: like `cws mark`, it takes the typed code; a wrong code skips the claim. */
+async function verdict(env: Env, log: EventLog, c: Claim, status: 'FALSIFIED' | 'SUPPORTED', tally: Tally): Promise<void> {
+  const evidence = (await env.io.ask('What shows it? (optional): ')).trim();
+  const code = env.io.challenge();
+  const answer = await env.io.ask(`Type ${code} to mark it ${status.toLowerCase()}: `);
+  if (answer.trim().toUpperCase() !== code.toUpperCase()) {
+    warn(env, 'Not confirmed; skipped.');
+    tally.skipped++;
+    return;
+  }
+  await log.append({ type: 'CLAIM_STATUS_CHANGED', actor: HUMAN, payload: { claimId: c.id, status, ...(evidence ? { evidence } : {}) } });
+  if (status === 'FALSIFIED') tally.falsified++;
+  else tally.supported++;
+}
+
+async function claimAction(env: Env, log: EventLog, c: Claim, key: string, tally: Tally): Promise<void> {
   if (key === 'c') {
     await log.append({ type: 'CLAIM_CONFIRMED', actor: HUMAN, payload: { claimId: c.id } });
     tally.confirmed++;
   } else if (key === 'r') {
     await log.append({ type: 'CLAIM_STATUS_CHANGED', actor: HUMAN, payload: { claimId: c.id, status: 'RETIRED' } });
     tally.retired++;
+  } else if (TESTABLE.has(c.type) && (key === 'f' || key === 's')) {
+    await verdict(env, log, c, VERDICTS[key], tally);
   } else {
     tally.skipped++;
   }
@@ -66,9 +89,12 @@ async function claimAction(log: EventLog, c: Claim, key: string, tally: Tally): 
 
 async function reviewClaim(env: Env, log: EventLog, c: Claim, tally: Tally): Promise<Verdict> {
   say(env, '', describeClaim(c, log.state));
-  const key = (await env.io.ask('[c]onfirm [r]etire [s]kip [q]uit: ')).trim().toLowerCase();
+  const keys = TESTABLE.has(c.type)
+    ? '[c]onfirm [f]alsified [s]upported [r]etire [Enter] skip [q]uit: '
+    : '[c]onfirm [r]etire [s]kip [q]uit: ';
+  const key = (await env.io.ask(keys)).trim().toLowerCase();
   if (key === 'q') return 'quit';
-  await guarded(env, c.id, () => claimAction(log, c, key, tally));
+  await guarded(env, c.id, () => claimAction(env, log, c, key, tally));
   return 'continue';
 }
 
@@ -77,7 +103,7 @@ export async function review(env: Env): Promise<void> {
   const log = await openLog(env);
   if (pendingProposals(log.state).length === 0 && unconfirmedAiClaims(log.state).length === 0) return say(env, 'Inbox empty.');
   await confirmDecision(env);
-  const tally: Tally = { accepted: 0, rejected: 0, confirmed: 0, retired: 0, skipped: 0 };
+  const tally: Tally = { accepted: 0, rejected: 0, confirmed: 0, retired: 0, falsified: 0, supported: 0, skipped: 0 };
   let verdict: Verdict = 'continue';
   for (const p of pendingProposals(log.state)) {
     verdict = await reviewProposal(env, log, p, tally);
@@ -91,6 +117,6 @@ export async function review(env: Env): Promise<void> {
     env,
     '',
     `Review done: ${tally.accepted} accepted, ${tally.rejected} rejected, ${tally.confirmed} confirmed, ` +
-      `${tally.retired} retired, ${tally.skipped} skipped.`,
+      `${tally.retired} retired, ${tally.falsified} falsified, ${tally.supported} supported, ${tally.skipped} skipped.`,
   );
 }

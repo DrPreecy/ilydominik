@@ -1,6 +1,7 @@
 import type { Command } from 'commander';
 import { newId } from '../../domain/ids.ts';
 import type { ClaimType, Risk } from '../../domain/types.ts';
+import { FINDING_MARKER, FINDING_MARKER_RESERVED } from '../../findings/types.ts';
 import { actorOf, confirmDecision, fail, openLog, requireHumanUnlessAgent, say, splitList, type ActorOpts, type Env } from '../human.ts';
 
 interface AddClaimOpts extends ActorOpts {
@@ -32,6 +33,7 @@ async function dump(env: Env, parts: string[], opts: ActorOpts): Promise<void> {
 
 async function addClaim(env: Env, o: AddClaimOpts): Promise<void> {
   requireHumanUnlessAgent(env, 'claim add', o);
+  if (o.text.trimStart().startsWith(FINDING_MARKER)) fail(env, FINDING_MARKER_RESERVED);
   const log = await openLog(env);
   if (!o.agent && AUTHORITATIVE_TYPES.has(o.type.toUpperCase())) await confirmDecision(env);
   const claimId = newId('c');

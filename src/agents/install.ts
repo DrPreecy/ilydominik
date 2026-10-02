@@ -80,24 +80,24 @@ export function upsertBlock(existing: string | null, block: string): string {
   return `${existing.replace(/\s*$/, '')}\n\n${block}\n`;
 }
 
-async function writeBlockFile(root: string, rel: string, block: string, out: InstallResult): Promise<void> {
+/** One file the install will write: the final content, or null when a hand-written file must be left alone. */
+interface PlannedFile {
+  rel: string;
+  content: string | null;
+}
+
+async function planBlockFile(root: string, rel: string, block: string): Promise<PlannedFile> {
   const file = path.join(root, rel);
   await assertSafeDestination(root, file);
-  await writeFile(root, file, upsertBlock(await readIfExists(file), block));
-  out.written.push(rel);
+  return { rel, content: upsertBlock(await readIfExists(file), block) };
 }
 
 /** Wrapper files are ours only if they carry the marker; a hand-written file is never touched. */
-async function writeWrapper(root: string, rel: string, content: string, out: InstallResult): Promise<void> {
+async function planWrapper(root: string, rel: string, content: string): Promise<PlannedFile> {
   const file = path.join(root, rel);
   await assertSafeDestination(root, file);
   const existing = await readIfExists(file);
-  if (existing !== null && !existing.includes(GENERATED_MARK)) {
-    out.skipped.push(rel);
-    return;
-  }
-  await writeFile(root, file, content);
-  out.written.push(rel);
+  return { rel, content: existing !== null && !existing.includes(GENERATED_MARK) ? null : content };
 }
 
 async function purposeInfos(): Promise<PurposeInfo[]> {
@@ -108,29 +108,38 @@ async function purposeInfos(): Promise<PurposeInfo[]> {
 
 type Wrapper = (p: PurposeInfo) => string;
 
-async function writeWrappers(root: string, infos: PurposeInfo[], dir: string, name: (p: string) => string, build: Wrapper, out: InstallResult): Promise<void> {
-  for (const info of infos) await writeWrapper(root, `${dir}/${name(info.purpose)}`, build(info), out);
+function wrappers(root: string, infos: PurposeInfo[], dir: string, name: (p: string) => string, build: Wrapper): Promise<PlannedFile>[] {
+  return infos.map((info) => planWrapper(root, `${dir}/${name(info.purpose)}`, build(info)));
 }
 
+function plan(root: string, targets: ReadonlySet<AgentTarget>, infos: PurposeInfo[]): Promise<PlannedFile>[] {
+  const cws = (p: string): string => `cws-${p}.md`;
+  return [
+    ...(targets.has('agents-md') ? [planBlockFile(root, 'AGENTS.md', agentsBlock(infos))] : []),
+    ...(targets.has('claude')
+      ? [planBlockFile(root, 'CLAUDE.md', claudeBlock()), ...wrappers(root, infos, '.claude/commands', cws, claudeCommand)]
+      : []),
+    ...(targets.has('copilot') ? wrappers(root, infos, '.github/prompts', (p) => `cws-${p}.prompt.md`, copilotPrompt) : []),
+    ...(targets.has('gemini')
+      ? [planBlockFile(root, 'GEMINI.md', geminiBlock()), ...wrappers(root, infos, '.agent/workflows', cws, geminiWorkflow)]
+      : []),
+  ];
+}
+
+/** Every destination is checked (links, junctions, outside the root) before the first file is written. */
 export async function installAgents(rootDir: string, opts: { targets?: AgentTarget[] } = {}): Promise<InstallResult> {
   if ((await fs.lstat(rootDir)).isSymbolicLink()) throw new Error('agent install root must not be a symbolic link');
   const root = await fs.realpath(rootDir);
   const targets = new Set<AgentTarget>(opts.targets ?? AGENT_TARGETS);
-  const infos = await purposeInfos();
+  const planned = await Promise.all(plan(root, targets, await purposeInfos()));
   const out: InstallResult = { written: [], skipped: [] };
-  const cws = (p: string): string => `cws-${p}.md`;
-
-  if (targets.has('agents-md')) await writeBlockFile(root, 'AGENTS.md', agentsBlock(infos), out);
-  if (targets.has('claude')) {
-    await writeBlockFile(root, 'CLAUDE.md', claudeBlock(), out);
-    await writeWrappers(root, infos, '.claude/commands', cws, claudeCommand, out);
-  }
-  if (targets.has('copilot')) {
-    await writeWrappers(root, infos, '.github/prompts', (p) => `cws-${p}.prompt.md`, copilotPrompt, out);
-  }
-  if (targets.has('gemini')) {
-    await writeBlockFile(root, 'GEMINI.md', geminiBlock(), out);
-    await writeWrappers(root, infos, '.agent/workflows', cws, geminiWorkflow, out);
+  for (const { rel, content } of planned) {
+    if (content === null) {
+      out.skipped.push(rel);
+      continue;
+    }
+    await writeFile(root, path.join(root, rel), content);
+    out.written.push(rel);
   }
   return out;
 }

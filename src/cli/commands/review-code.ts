@@ -1,8 +1,8 @@
 import type { Command } from 'commander';
-import { loadIntegrations } from '../../integrations/config.ts';
-import { findExecutable } from '../../integrations/exec.ts';
+import { TOOL_ENV, toolOverride } from '../../integrations/config.ts';
+import { resolveToolCommand, type ToolCommand } from '../../integrations/exec.ts';
 import { coverageLines, missingRuleFiles, ocrPreview, ocrRules, ruleLines, type OcrPreview, type OcrRangeOptions } from '../../integrations/ocr.ts';
-import { fail, openLog, projectRoot, say, type ActorOpts, type Env } from '../human.ts';
+import { fail, openLog, say, type ActorOpts, type Env } from '../human.ts';
 
 const MAX_LISTED_RULE_CHARS = 4000;
 
@@ -25,16 +25,15 @@ const HOW_TO_RECORD = [
   'to change, and never install or run tools that are not already present.',
 ].join('\n');
 
-/** A configured path is still checked: a stale path in the config should not reach spawn. */
-async function resolveOcr(env: Env): Promise<string> {
-  const root = projectRoot(env);
-  const configured = root === null ? undefined : (await loadIntegrations(root)).config.tools.ocr;
-  const found = findExecutable(configured ?? 'ocr');
+/** `ocr` from CWS_TOOL_OCR or PATH; a repo file never chooses it, and a stale path never reaches spawn. */
+function resolveOcr(env: Env): ToolCommand {
+  const configured = toolOverride('ocr');
+  const found = resolveToolCommand(configured ?? 'ocr');
   if (found !== null) return found;
   const hint =
     configured === undefined
-      ? 'Install it with `npm i -g @alibaba-group/open-code-review`, or set `tools.ocr` in .cws/integrations.json.'
-      : `The path in .cws/integrations.json does not exist: ${configured}`;
+      ? `It does not exist on PATH. Install it with \`npm i -g @alibaba-group/open-code-review\`, or set ${TOOL_ENV.ocr} to its path.`
+      : `The path in ${TOOL_ENV.ocr} does not exist: ${configured}`;
   fail(env, `error: \`ocr\` was not found. ${hint}`);
 }
 
@@ -50,7 +49,7 @@ function rangeOf(opts: { from?: string; to?: string; commit?: string; background
 
 async function reviewCode(env: Env, _opts: ActorOpts & { from?: string; to?: string; commit?: string; background?: string; exclude?: string; rules?: boolean }): Promise<void> {
   await openLog(env);
-  const command = await resolveOcr(env);
+  const command = resolveOcr(env);
   const range = rangeOf(_opts);
 
   let preview: OcrPreview;

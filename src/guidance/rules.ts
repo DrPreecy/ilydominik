@@ -90,6 +90,7 @@ export const RULES: readonly Rule[] = [
   fromWarning('untested-risk', 'proof', 80, 'UNTESTED_RISK', 'Test your riskiest ideas', 'These ideas could sink the project if they are wrong, and nobody has checked them yet.'),
   fromWarning('override-followup', 'proof', 75, 'OVERRIDE_UNRESOLVED', 'Follow up on a decision you made despite open doubts', 'You chose to go ahead while some questions were open. They are still open.'),
   fromWarning('critical-unknown', 'understand', 70, 'OPEN_CRITICAL_UNKNOWN', 'Answer the important open questions', 'Questions that matter a lot are still unanswered.'),
+  fromWarning('supported-without-evidence', 'proof', 65, 'SUPPORTED_WITHOUT_EVIDENCE', 'Back up what you marked as supported', 'Some ideas are marked as holding up, but nothing recorded shows why. Add the evidence, or reopen them.'),
   unprocessedNotes,
   fromWarning('unconfirmed-ai', 'review', 50, 'UNCONFIRMED_AI_CLAIMS', 'Check the AI guesses', 'Some statements come from the AI, not from you. Confirm, change or retire them.'),
   emptyProject,

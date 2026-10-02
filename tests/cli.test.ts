@@ -655,4 +655,55 @@ describe('cli: owned fix regressions', () => {
   });
 });
 
+describe('cli: review fixes', () => {
+  it('an unknown command says so; with no arguments the menu still runs', async () => {
+    const io = human();
+    assert.equal(await cli(io, 'bogus'), EXIT.ERROR);
+    assert.match(errText(io), /unknown command 'bogus'/);
+  });
+
+  it('--version prints the package version and exits 0', async () => {
+    const pkg = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
+    const io = human();
+    assert.equal(await cli(io, '--version'), EXIT.OK);
+    assert.equal(text(io).trim(), pkg.version);
+  });
+
+  it('the menu records a project title that looks like a flag', async () => {
+    const io = human(['1', '--agent x']);
+    assert.equal(await cli(io), EXIT.OK);
+    assert.equal((await state()).title, '--agent x');
+  });
+
+  it('end of input at the session summary cancels instead of ending the session', async () => {
+    await initProject();
+    await cli(human(), 'session', 'start', 'Clarify');
+    // The fake io answers '' once the answers run out, as Ctrl+D does.
+    assert.equal(await cli(human(['1'])), EXIT.OK);
+    assert.notEqual((await state()).activeSessionId, undefined);
+    assert.equal(await cli(human(['1', '', 'y'])), EXIT.OK);
+    assert.equal((await state()).activeSessionId, undefined);
+  });
+
+  it('review can mark an AI hypothesis falsified or supported, with the typed code', async () => {
+    await initProject();
+    await cli(mkAgent(), 'claim', 'add', '--agent', 'copilot', '--type', 'HYPOTHESIS', '--text', 'H1');
+    await cli(mkAgent(), 'claim', 'add', '--agent', 'copilot', '--type', 'HYPOTHESIS', '--text', 'H2');
+    await cli(mkAgent(), 'claim', 'add', '--agent', 'copilot', '--type', 'HYPOTHESIS', '--text', 'H3');
+    const io = human(['K7Q', 'f', 'not reproducible', 'K7Q', 's', 'saw it fail', 'K7Q', 's', '', 'WRONG']);
+    assert.equal(await cli(io, 'review'), EXIT.OK);
+    const s = await state();
+    const status = (t: string) => s.claims.find((c) => c.text === t)?.status;
+    assert.equal(status('H1'), 'FALSIFIED');
+    assert.equal(status('H2'), 'SUPPORTED');
+    assert.equal(status('H3'), 'OPEN');
+    assert.equal(s.claims.find((c) => c.text === 'H1')?.evidence[0]?.text, 'not reproducible');
+    assert.match(text(io), /1 falsified, 1 supported/);
+    // A human verdict counts as reviewed: the inbox no longer lists it.
+    const inbox = human();
+    await cli(inbox, 'inbox');
+    assert.doesNotMatch(text(inbox), /H1|H2/);
+  });
+});
+
 void agent;

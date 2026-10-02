@@ -102,7 +102,8 @@ describe('finding shape', () => {
 
   it('round-trips the marker in claim text', () => {
     const fingerprint = findingFingerprint(finding());
-    assert.equal(findingMarkerOf(`${findingTag(fingerprint)} something`), fingerprint);
+    assert.equal(findingMarkerOf(`${findingTag(fingerprint)} [high] something`), fingerprint);
+    assert.equal(findingMarkerOf(`see ${findingTag(fingerprint)} [high] something`), null);
     assert.equal(findingMarkerOf('an ordinary claim'), null);
   });
 
@@ -110,7 +111,7 @@ describe('finding shape', () => {
     assert.equal(redactSecrets('key AKIAIOSFODNN7EXAMPLE here'), 'key [redacted] here');
     assert.equal(redactSecrets('token: "ghp_abcdefghijklmnopqrstuvwx"'), 'token: [redacted]');
     assert.equal(redactSecrets('password = hunter2secret'), 'password = [redacted]');
-    assert.equal(redactSecrets('headers: { Authorization: Bearer abcdefghijklmnop }'), 'headers: { Authorization: Bearer abcdefghijklmnop }');
+    assert.equal(redactSecrets('headers: { Authorization: Bearer abcdefghijklmnop }'), 'headers: { Authorization: [redacted] }');
     assert.match(redactSecrets('-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----'), /^\[redacted\]$/);
     assert.equal(redactSecrets('line one\n\n  line two'), 'line one line two');
     assert.equal(redactSecrets('x'.repeat(50), 10).length, 10);
@@ -149,7 +150,7 @@ describe('sarif', () => {
             locations: [
               {
                 physicalLocation: {
-                  artifactLocation: { uri: 'file:///src/db.ts' },
+                  artifactLocation: { uri: 'file:///repo/src/db.ts' },
                   region: { startLine: 12, endLine: 14, snippet: { text: "db.query('... ' + input)" } },
                 },
               },
@@ -161,7 +162,7 @@ describe('sarif', () => {
   };
 
   it('reads a rule’s security-severity and keeps the location', () => {
-    const [parsed] = parseSarif(codeql);
+    const [parsed] = parseSarif(codeql, { root: '/repo' });
     assert.equal(parsed?.tool, 'codeql');
     assert.equal(parsed?.ruleId, 'js/sql-injection');
     assert.equal(parsed?.severity, 'critical');
@@ -205,7 +206,8 @@ describe('sarif', () => {
   });
 
   it('decodes URIs and honors a limit', () => {
-    assert.equal(uriToPath('file:///src%20dir/a.ts'), 'src dir/a.ts');
+    assert.equal(uriToPath('file:///src%20dir/a.ts'), '/src dir/a.ts');
+    assert.equal(uriToPath('file:///C:/repo/a.ts'), 'C:/repo/a.ts');
     assert.equal(uriToPath('src\\b.ts'), 'src/b.ts');
     const many = {
       runs: [
@@ -286,17 +288,22 @@ describe('ocr delegate contracts', () => {
 
   it('builds argument lists and rejects wrong shapes', () => {
     assert.deepEqual(previewArgs({ from: 'main', to: 'feature' }), ['delegate', 'preview', '--format', 'json', '--from', 'main', '--to', 'feature']);
-    assert.deepEqual(rulesArgs(['a.go']), ['delegate', 'rule', 'a.go', '--format', 'json']);
+    assert.deepEqual(rulesArgs(['a.go']), ['delegate', 'rule', '--format', 'json', '--', 'a.go']);
     assert.throws(() => parseOcrPreview({ mode: 'range' }), /not an OCR delegate preview/);
     assert.throws(() => parseOcrRules({ groups: 'nope' }), /not OCR delegate rules/);
     assert.throws(() => parseOcrComments({}), /not an OCR review result/);
   });
 });
 
+const AGENT = { kind: 'ai', agent: 'copilot' } as const;
+const RUN_NOTE = { id: 'n1', text: findingsNoteText('semgrep', 1, 'stdin'), actor: AGENT };
+const ingested = (id: string, text: string, status = 'OPEN') =>
+  ({ id, type: 'HYPOTHESIS', text, status, derivedFrom: ['n1'], createdBy: AGENT, confirmed: false });
+const recordedState = (claims: unknown[]) => ({ claims, notes: [RUN_NOTE] }) as never;
+
 describe('finding ingest planning', () => {
   it('skips duplicates, honors the severity floor and the limit', () => {
-    const recorded = findingClaimText(finding());
-    const existing = [{ id: 'c1', text: recorded } as never];
+    const existing = recordedState([ingested('c1', findingClaimText(finding()))]);
     const plan = planIngest(
       existing,
       [finding(), finding({ path: 'src/low.ts', severity: 'low' }), finding({ path: 'src/new.ts', severity: 'critical' })],
@@ -306,13 +313,13 @@ describe('finding ingest planning', () => {
     assert.equal(plan.belowSeverity, 1);
     assert.deepEqual(plan.fresh.map((f) => f.path), ['src/new.ts']);
 
-    const limited = planIngest([], [finding(), finding({ path: 'src/second.ts' })], { limit: 1 });
+    const limited = planIngest(recordedState([]), [finding(), finding({ path: 'src/second.ts' })], { limit: 1 });
     assert.equal(limited.fresh.length, 1);
     assert.equal(limited.overLimit, 1);
   });
 
   it('drops a finding repeated inside one batch', () => {
-    const plan = planIngest([], [finding(), finding()]);
+    const plan = planIngest(recordedState([]), [finding(), finding()]);
     assert.equal(plan.fresh.length, 1);
     assert.equal(plan.duplicates.length, 1);
   });
@@ -331,11 +338,11 @@ describe('finding ingest planning', () => {
   });
 
   it('lists recorded and open findings', () => {
-    const claims = [
-      { id: 'c1', text: findingClaimText(finding()), status: 'OPEN' },
-      { id: 'c2', text: findingClaimText(finding({ path: 'src/b.ts' })), status: 'FALSIFIED' },
-      { id: 'c3', text: 'not a finding', status: 'OPEN' },
-    ] as never[];
+    const claims = recordedState([
+      ingested('c1', findingClaimText(finding())),
+      ingested('c2', findingClaimText(finding({ path: 'src/b.ts' })), 'FALSIFIED'),
+      ingested('c3', 'not a finding'),
+    ]);
     assert.equal(recordedFindings(claims).length, 2);
     assert.deepEqual(openFindings(claims).map((c) => c.id), ['c1']);
   });
@@ -357,7 +364,7 @@ describe('findings command', () => {
 
   it('validates cws-format findings', () => {
     assert.equal(findingsFrom([finding()], 'cws').length, 1);
-    assert.throws(() => findingsFrom([{ message: 'no path' }] as never, 'cws'), /needs at least a path and a message/);
+    assert.throws(() => findingsFrom([{ tool: 't', severity: 'low', message: 'no path' }], 'cws'), /finding #1: path is required/);
   });
 
   it('records findings from stdin and then reports them as duplicates', async () => {
@@ -410,23 +417,23 @@ describe('findings command', () => {
 
   it('fails clearly on unusable input', async () => {
     const empty = io(base, '   ');
-    assert.equal(await runCli(['findings', 'ingest', '-'], empty), EXIT.ERROR);
+    assert.equal(await runCli(['findings', 'ingest', '-', '--agent', 'copilot'], empty), EXIT.ERROR);
     assert.match(text(empty), /no findings given/);
 
     const broken = io(base, '{ not json');
-    assert.equal(await runCli(['findings', 'ingest', '-'], broken), EXIT.ERROR);
+    assert.equal(await runCli(['findings', 'ingest', '-', '--agent', 'copilot'], broken), EXIT.ERROR);
     assert.match(text(broken), /input is not JSON/);
 
     const unknown = io(base, '{"anything":true}');
-    assert.equal(await runCli(['findings', 'ingest', '-'], unknown), EXIT.ERROR);
+    assert.equal(await runCli(['findings', 'ingest', '-', '--agent', 'copilot'], unknown), EXIT.ERROR);
     assert.match(text(unknown), /cannot tell what this JSON is/);
 
     const badFormat = io(base, '[]');
-    assert.equal(await runCli(['findings', 'ingest', '-', '--format', 'nope'], badFormat), EXIT.ERROR);
+    assert.equal(await runCli(['findings', 'ingest', '-', '--agent', 'copilot', '--format', 'nope'], badFormat), EXIT.ERROR);
     assert.match(text(badFormat), /--format must be one of/);
 
     const noFindings = io(base, '{"version":"2.1.0","runs":[]}');
-    assert.equal(await runCli(['findings', 'ingest', '-', '--format', 'sarif'], noFindings), EXIT.OK);
+    assert.equal(await runCli(['findings', 'ingest', '-', '--agent', 'copilot', '--format', 'sarif'], noFindings), EXIT.OK);
     assert.match(text(noFindings), /No findings in that input/);
   });
 
@@ -437,12 +444,14 @@ describe('findings command', () => {
   });
 
   it('explains how to point cws at ocr when it is not installed', async () => {
-    await fs.writeFile(
-      path.join(base, '.cws', 'integrations.json'),
-      JSON.stringify({ version: 1, tools: { ocr: path.join(base, 'no-such-ocr') } }),
-    );
-    const fake = io(base, '', true);
-    assert.equal(await runCli(['review-code'], fake), EXIT.ERROR);
-    assert.match(text(fake), /does not exist/);
+    process.env['CWS_TOOL_OCR'] = path.join(base, 'no-such-ocr');
+    try {
+      const fake = io(base, '', true);
+      assert.equal(await runCli(['review-code'], fake), EXIT.ERROR);
+      assert.match(text(fake), /does not exist/);
+      assert.match(text(fake), /CWS_TOOL_OCR/);
+    } finally {
+      delete process.env['CWS_TOOL_OCR'];
+    }
   });
 });

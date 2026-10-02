@@ -20,7 +20,7 @@
 
 import { z } from 'zod';
 import { normalizePath, redactSecrets, type Finding, type Severity } from '../findings/types.ts';
-import { runTool, type RunOptions } from './exec.ts';
+import { runTool, type RunOptions, type ToolCommand } from './exec.ts';
 
 const schemaVersion = z.union([z.string(), z.number()]).transform((value) => String(value));
 const count = z.number().int().nonnegative().catch(0);
@@ -209,27 +209,33 @@ export function previewArgs(opts: OcrRangeOptions = {}): string[] {
   return withRange(['delegate', 'preview', '--format', 'json'], opts);
 }
 
+/** Flags first, then `--`, so a file named like `--repo=/x` stays a file name. */
 export function rulesArgs(paths: readonly string[], opts: OcrRangeOptions = {}): string[] {
-  return withRange(['delegate', 'rule', ...paths, '--format', 'json'], opts);
+  return [...withRange(['delegate', 'rule', '--format', 'json'], opts), '--', ...paths];
 }
 
-function withRange(base: string[], opts: OcrRangeOptions): string[] {
-  if (opts.repo !== undefined) base.push('--repo', opts.repo);
-  if (opts.from !== undefined) base.push('--from', opts.from);
-  if (opts.to !== undefined) base.push('--to', opts.to);
-  if (opts.commit !== undefined) base.push('--commit', opts.commit);
-  if (opts.background !== undefined) base.push('--background', opts.background);
-  if (opts.exclude !== undefined) base.push('--exclude', opts.exclude);
-  if (opts.rule !== undefined) base.push('--rule', opts.rule);
-  return base;
+function withRange(base: readonly string[], opts: OcrRangeOptions): string[] {
+  const flag = (name: string, value: string | undefined): string[] => (value === undefined ? [] : [name, value]);
+  return [
+    ...base,
+    ...flag('--repo', opts.repo),
+    ...flag('--from', opts.from),
+    ...flag('--to', opts.to),
+    ...flag('--commit', opts.commit),
+    ...flag('--background', opts.background),
+    ...flag('--exclude', opts.exclude),
+    ...flag('--rule', opts.rule),
+  ];
 }
 
 function firstLineOf(text: string): string {
   return text.split(/\r?\n/).find((line) => line.trim() !== '')?.trim().slice(0, 200) ?? '';
 }
 
-async function runJson(command: string, args: readonly string[], opts: RunOptions): Promise<unknown> {
-  const result = await runTool(command, args, opts);
+async function runJson(tool: string | ToolCommand, args: readonly string[], opts: RunOptions): Promise<unknown> {
+  const { file, prefix } = typeof tool === 'string' ? { file: tool, prefix: [] } : tool;
+  const command = file;
+  const result = await runTool(file, [...prefix, ...args], opts);
   if (!result.ok) {
     const why = result.timedOut ? 'timed out' : `exit ${result.code ?? 'unknown'}`;
     const detail = firstLineOf(result.stderr);
@@ -243,7 +249,7 @@ async function runJson(command: string, args: readonly string[], opts: RunOption
 }
 
 export async function ocrPreview(
-  command: string,
+  command: string | ToolCommand,
   opts: RunOptions = {},
   range: OcrRangeOptions = {},
 ): Promise<OcrPreview> {
@@ -251,7 +257,7 @@ export async function ocrPreview(
 }
 
 export async function ocrRules(
-  command: string,
+  command: string | ToolCommand,
   paths: readonly string[],
   opts: RunOptions = {},
   range: OcrRangeOptions = {},

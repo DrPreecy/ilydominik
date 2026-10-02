@@ -5,12 +5,15 @@
  * risk, linked to a note that describes the run. The human marks each one supported or
  * false, and that verdict is what later tells CWS whether a tool is worth trusting.
  *
- * Deduplication works off the finding marker in the claim text, so the log stays the
- * single source of truth and a re-run of the same tool adds nothing.
+ * Deduplication works off the finding marker that ingest writes at the start of the claim
+ * text, so the log stays the single source of truth: a re-run of the same tool adds only
+ * findings not recorded yet (for example the ones a previous run left over its --limit).
+ * Only claims shaped exactly as ingest writes them count, so text that merely mentions a
+ * marker cannot hide a real finding.
  */
 
 import { newId } from '../domain/ids.ts';
-import type { Actor, Claim, EventInput } from '../domain/types.ts';
+import type { Actor, Claim, EventInput, Note, ProjectState } from '../domain/types.ts';
 import {
   findingFingerprint,
   findingMarkerOf,
@@ -50,14 +53,13 @@ function rank(finding: Finding): number {
   return index === -1 ? RISK_ORDER.length : index;
 }
 
-export function planIngest(
-  existing: readonly Claim[],
-  findings: readonly Finding[],
-  opts: IngestOptions = {},
-): IngestPlan {
+/** The parts of the project state that tell which findings are already recorded. */
+export type RecordedSource = Pick<ProjectState, 'claims' | 'notes'>;
+
+export function planIngest(existing: RecordedSource, findings: readonly Finding[], opts: IngestOptions = {}): IngestPlan {
   const minimum = opts.minSeverity ?? DEFAULT_MIN_SEVERITY;
   const limit = opts.limit ?? DEFAULT_LIMIT;
-  const known = new Set(existing.map((claim) => findingMarkerOf(claim.text)).filter((tag): tag is string => tag !== null));
+  const known = new Set(recordedFindings(existing).map((entry) => entry.fingerprint));
 
   const duplicates: Finding[] = [];
   const eligible: Finding[] = [];
@@ -85,6 +87,8 @@ export function planIngest(
     overLimit: Math.max(0, ordered.length - limit),
   };
 }
+
+const NOTE_SHAPE = /^Review findings[\s\S]*: \d+ new findings? recorded as AI hypotheses\. Confirm, fix or mark each one false with `cws review`\.$/;
 
 /** The note a batch of findings hangs off, so the log shows where they came from. */
 export function findingsNoteText(tool: string, total: number, source: string): string {
@@ -116,15 +120,27 @@ export interface RecordedFinding {
   fingerprint: string;
 }
 
-export function recordedFindings(claims: readonly Claim[]): RecordedFinding[] {
-  return claims.flatMap((claim) => {
+const sameActor = (a: Actor, b: Actor): boolean =>
+  a.kind === b.kind && (a.kind === 'human' || (b.kind === 'ai' && a.agent === b.agent));
+
+/** A claim ingest wrote: marker first, a hypothesis (unless a human retyped it), from the run note of the same actor. */
+function ingestedBy(claim: Claim, notes: ReadonlyMap<string, Note>): boolean {
+  if (claim.type !== 'HYPOTHESIS' && !claim.confirmed) return false;
+  if (claim.derivedFrom.length !== 1) return false;
+  const note = notes.get(claim.derivedFrom[0] ?? '');
+  return note !== undefined && NOTE_SHAPE.test(note.text) && sameActor(note.actor, claim.createdBy);
+}
+
+export function recordedFindings(state: RecordedSource): RecordedFinding[] {
+  const notes = new Map(state.notes.map((note) => [note.id, note]));
+  return state.claims.flatMap((claim) => {
     const fingerprint = findingMarkerOf(claim.text);
-    return fingerprint === null ? [] : [{ claim, fingerprint }];
+    return fingerprint === null || !ingestedBy(claim, notes) ? [] : [{ claim, fingerprint }];
   });
 }
 
-export function openFindings(claims: readonly Claim[]): Claim[] {
-  return recordedFindings(claims)
+export function openFindings(state: RecordedSource): Claim[] {
+  return recordedFindings(state)
     .filter(({ claim }) => claim.status === 'OPEN' || claim.status === 'TESTING')
     .map(({ claim }) => claim);
 }

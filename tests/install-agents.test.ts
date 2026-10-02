@@ -134,6 +134,15 @@ describe('install-agents (one source → Copilot, Claude Code, Gemini/Antigravit
     assert.equal(await fs.readFile(outside, 'utf8'), 'external rules');
   });
 
+  it('checks every destination before writing anything', async () => {
+    const destination = path.join(dir, 'alternate');
+    await fs.mkdir(destination);
+    await fs.symlink(destination, path.join(dir, '.claude'), 'junction');
+    await assert.rejects(installAgents(dir), /symbolic link|symlink/i);
+    assert.equal(await exists('AGENTS.md'), false);
+    assert.equal(await exists('CLAUDE.md'), false);
+  });
+
   it('rejects an internal junction too rather than following linked target ancestry', async () => {
     const destination = path.join(dir, 'alternate');
     await fs.mkdir(destination);

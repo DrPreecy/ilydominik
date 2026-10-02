@@ -1,5 +1,6 @@
 import type { Claim, ProjectState, Purpose } from '../domain/types.ts';
-import { assess } from './warnings.ts';
+import { maskSecrets } from '../findings/types.ts';
+import { assess, awaitsReview } from './warnings.ts';
 
 const DEFAULT_MAX_NOTES = 20;
 
@@ -8,8 +9,10 @@ export interface ContextOptions {
   maxNotes?: number;
 }
 
-const dataLine = (value: unknown): string => JSON.stringify(value);
-const isUnconfirmedAi = (claim: Claim) => claim.createdBy.kind === 'ai' && !claim.confirmed;
+/** Stored text can carry credentials pasted by a person or a tool; the pack goes to an AI, so they are masked. */
+const dataLine = (value: unknown): string =>
+  JSON.stringify(value, (_key, field: unknown) => (typeof field === 'string' ? maskSecrets(field) : field));
+const isUnconfirmedAi = awaitsReview;
 const isOpen = (claim: Claim) => claim.status === 'OPEN' || claim.status === 'TESTING';
 
 function section(title: string, records: readonly unknown[]): string[] {

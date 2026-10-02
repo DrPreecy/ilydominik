@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { assess, phaseWarnings } from '../src/guidance/warnings.ts';
+import { assess, phaseWarnings, STATUS_WARNING_CODES } from '../src/guidance/warnings.ts';
+import { RULES } from '../src/guidance/rules.ts';
 import { nextSteps } from '../src/guidance/next-steps.ts';
 import { buildContext } from '../src/guidance/context-pack.ts';
 import { renderPrompt, loadPromptTemplate } from '../src/guidance/render.ts';
@@ -14,6 +15,31 @@ function withRiskyAssumption(status: 'OPEN' | 'TESTING' | 'FALSIFIED' | 'SUPPORT
   if (status !== 'OPEN') s = step(s, { type: 'CLAIM_STATUS_CHANGED', actor: HUMAN, payload: { claimId: 'a1', status, evidence: 'e' } });
   return s;
 }
+
+describe('warnings and next steps agree', () => {
+  it('every warning code status can show has a next-step rule', () => {
+    const fake = (code: string) => [{ code, severity: 'info' as const, message: '', refs: ['x'] }];
+    for (const code of STATUS_WARNING_CODES) {
+      const fired = RULES.filter((r) => r.evaluate(project(), fake(code)) !== null && r.evaluate(project(), []) === null);
+      assert.ok(fired.length > 0, code);
+    }
+  });
+
+  it('evidence-free support is suggested as a proof step', () => {
+    const s = withRiskyAssumption('SUPPORTED', 'LOW');
+    const supported = step(s, { type: 'CLAIM_ADDED', actor: HUMAN, payload: { claimId: 'b1', type: 'HYPOTHESIS', text: 'x' } });
+    const marked = step(supported, { type: 'CLAIM_STATUS_CHANGED', actor: HUMAN, payload: { claimId: 'b1', status: 'SUPPORTED' } });
+    assert.ok(codes(marked).includes('SUPPORTED_WITHOUT_EVIDENCE'));
+    assert.ok(nextSteps(marked, 9).some((n) => n.ruleId === 'supported-without-evidence' && n.purpose === 'proof'));
+  });
+
+  it('the context pack redacts credentials in stored text', () => {
+    const s = step(project(), { type: 'NOTE_ADDED', actor: HUMAN, payload: { noteId: 'n1', text: 'db password: "hunter2" and Authorization: Bearer abcdefghijkl' } });
+    const pack = buildContext(s, 'explore');
+    assert.doesNotMatch(pack, /hunter2|abcdefghijkl/);
+    assert.match(pack, /\[redacted\]/);
+  });
+});
 
 describe('warnings (§24: warn, never block)', () => {
   it('a fresh project has no warnings', () => {

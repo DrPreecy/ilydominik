@@ -3,14 +3,14 @@
  *
  * Rules, in the spirit of `src/safety/command-guard.ts`:
  *  - an argument list, never a joined command line, and never a shell
- *  - a hard timeout and an output cap
+ *  - a hard timeout and an output cap; a timeout kills the whole process tree
  *  - the environment is inherited; real isolation comes from the sandbox, not from here
  *
  * Windows batch shims (`.cmd`/`.bat`) are refused instead of being run through cmd.exe,
  * because quoting there cannot be made safe. On Windows use WSL (see `./wsl.ts`).
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
@@ -19,6 +19,9 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const VERSION_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 256 * 1024;
 const WINDOWS_BATCH = /\.(cmd|bat)$/i;
+const NODE_SCRIPT = /\.(mjs|cjs|js)$/i;
+/** how long a process tree gets after SIGTERM before SIGKILL */
+const KILL_GRACE_MS = 2_000;
 
 export interface RunOptions {
   cwd?: string;
@@ -95,6 +98,27 @@ export function findExecutable(
   return shim;
 }
 
+/** A program plus the arguments that go before the caller's own, e.g. node and a script. */
+export interface ToolCommand {
+  file: string;
+  prefix: string[];
+}
+
+/**
+ * `findExecutable`, except that a `.mjs`/`.cjs`/`.js` path runs through this node, so a tool
+ * override (from the environment, never from a repo file) can name a script on every platform.
+ */
+export function resolveToolCommand(
+  command: string,
+  opts: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {},
+): ToolCommand | null {
+  if (NODE_SCRIPT.test(command) && (command.includes('/') || command.includes('\\'))) {
+    return isFile(command) ? { file: process.execPath, prefix: [command] } : null;
+  }
+  const file = findExecutable(command, opts);
+  return file === null ? null : { file, prefix: [] };
+}
+
 function unusableReason(command: string, args: readonly string[], platform: NodeJS.Platform): string | null {
   if (command.trim() === '') return 'no command given';
   if (args.some((arg) => arg.includes('\0') || arg.includes('\n') || arg.includes('\r'))) {
@@ -105,6 +129,28 @@ function unusableReason(command: string, args: readonly string[], platform: Node
       'Run cws inside WSL for tools installed there, or use the Linux binary.';
   }
   return null;
+}
+
+/** Kills `child` and everything it started: `taskkill /T` on Windows, the process group elsewhere. */
+function killTree(child: ChildProcessWithoutNullStreams): void {
+  const pid = child.pid;
+  if (pid === undefined) return;
+  if (process.platform === 'win32') {
+    const killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { shell: false, windowsHide: true, stdio: 'ignore' });
+    killer.on('error', () => child.kill('SIGKILL'));
+    return;
+  }
+  const signalGroup = (signal: NodeJS.Signals): void => {
+    try {
+      process.kill(-pid, signal);
+    } catch {
+      child.kill(signal);
+    }
+  };
+  signalGroup('SIGTERM');
+  setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) signalGroup('SIGKILL');
+  }, KILL_GRACE_MS).unref();
 }
 
 export function runTool(command: string, args: readonly string[] = [], opts: RunOptions = {}): Promise<RunResult> {
@@ -127,13 +173,21 @@ export function runTool(command: string, args: readonly string[] = [], opts: Run
   if (reason !== null) return Promise.resolve(fail(reason));
 
   return new Promise<RunResult>((resolve) => {
-    const child = spawn(command, [...args], {
-      ...(opts.cwd === undefined ? {} : { cwd: opts.cwd }),
-      env: opts.env ?? process.env,
-      shell: false,
-      windowsHide: true,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawn(command, [...args], {
+        ...(opts.cwd === undefined ? {} : { cwd: opts.cwd }),
+        env: opts.env ?? process.env,
+        shell: false,
+        windowsHide: true,
+        // its own process group on POSIX, so a timeout reaches grandchildren too
+        detached: process.platform !== 'win32',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } catch (error: unknown) {
+      resolve(fail(error instanceof Error ? error.message : String(error)));
+      return;
+    }
 
     const out: Buffer[] = [];
     const err: Buffer[] = [];
@@ -162,7 +216,7 @@ export function runTool(command: string, args: readonly string[] = [], opts: Run
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill();
+      killTree(child);
     }, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
     child.on('error', (error: Error) => {

@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import { CWS_DIR } from '../store/event-log.ts';
 
 export interface SafetyContext {
   cwd: string;
@@ -16,13 +17,64 @@ export interface SafetyDecision {
 }
 
 const SHELL_OPERATORS = ['&&', '||', ';', '|', '<', '>'];
-const SHELL_COMMANDS = new Set(['cmd', 'powershell', 'pwsh', 'sh', 'bash', 'zsh']);
 const DELETE_COMMANDS = new Set(['rm', 'del', 'erase', 'rmdir', 'rd', 'remove-item', 'ri']);
 const SHELL_ONLY_DELETES = new Set(['del', 'erase', 'rd', 'remove-item', 'ri']);
 const REMOVE_ITEM_TARGET_FLAGS = new Set(['-path', '-literalpath']);
 const REMOVE_ITEM_TARGET_PREFIXES = ['-path:', '-literalpath:'];
 const REMOVE_ITEM_SWITCHES = new Set(['-recurse', '-force', '-whatif', '-verbose']);
 const RM_LONG_SWITCHES = new Set(['--recursive', '--force', '--verbose', '--dir']);
+/** Directories whose loss cannot be undone from inside the project. */
+const PROTECTED_DIRS = ['.git', CWS_DIR];
+/** Windows drops trailing dots and spaces and the `::$DATA` stream, so `rm.exe.` still runs rm.exe. */
+const COMMAND_SUFFIX = /(?:[. ]+|::\$data|\.(?:exe|com|cmd|bat|ps1))$/i;
+const DRIVE_RELATIVE = /^[A-Za-z]:(?![\\/])/;
+const DRIVE_ABSOLUTE = /^[A-Za-z]:[\\/]/;
+
+/** Programs that run another program or script the guard cannot see into. */
+const LAUNCHERS: readonly { pattern: RegExp; reason: string }[] = [
+  {
+    pattern: /^(?:cmd|sh|bash|dash|ash|fish|ksh|mksh|zsh|csh|tcsh|pwsh.*|powershell.*)$/,
+    reason: 'inline shell commands are blocked; pass the command and arguments directly to cws safe-run',
+  },
+  {
+    pattern: /^(?:env|sudo|doas|su|runas|xargs|busybox|toybox|wsl|nohup|nice|ionice|timeout|stdbuf|chroot|setsid|time|watch|parallel)$/,
+    reason: 'command wrappers run another program the guard cannot inspect; pass the inner command directly',
+  },
+  {
+    pattern: /^(?:node|nodejs|deno|bun|python[0-9.]*|pythonw|py|pyw|perl[0-9.]*|ruby|php|lua|tclsh|osascript|cscript|wscript|mshta|rundll32)$/,
+    reason: 'script interpreters can delete anything; review the script and run it yourself in your terminal',
+  },
+  {
+    pattern: /^(?:npx|pnpx|bunx|uvx|pipx)$/,
+    reason: 'package runners download and run code the guard cannot inspect; run it yourself in your terminal',
+  },
+];
+
+type ArgsRule = (args: readonly string[]) => string | null;
+
+const RUNNER_SUBCOMMANDS: Readonly<Record<string, readonly string[]>> = {
+  npm: ['exec', 'x'],
+  pnpm: ['exec', 'dlx'],
+  yarn: ['exec', 'dlx'],
+};
+const FIND_ACTIONS = new Set(['-delete', '-exec', '-execdir', '-ok', '-okdir', '-fprint', '-fprint0', '-fprintf', '-fls']);
+const ROBOCOPY_DESTRUCTIVE = /^\/(?:mir|purge|move|mov)$/i;
+
+/** Global git options that take the next argument as their value. */
+const GIT_VALUE_GLOBALS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--config-env', '--attr-source']);
+/** Built-in subcommands; anything else may be an alias or a `git-<name>` helper that runs any program. */
+const GIT_SUBCOMMANDS = new Set([
+  'add', 'am', 'annotate', 'apply', 'archive', 'bisect', 'blame', 'branch', 'bundle', 'cat-file', 'check-attr',
+  'check-ignore', 'check-ref-format', 'checkout', 'cherry', 'cherry-pick', 'clean', 'clone', 'commit', 'commit-tree',
+  'config', 'count-objects', 'describe', 'diff', 'diff-files', 'diff-index', 'diff-tree', 'fetch', 'for-each-ref',
+  'format-patch', 'fsck', 'gc', 'grep', 'hash-object', 'help', 'init', 'log', 'ls-files', 'ls-remote', 'ls-tree',
+  'merge', 'merge-base', 'mv', 'name-rev', 'notes', 'pull', 'push', 'range-diff', 'rebase', 'reflog', 'remote',
+  'reset', 'restore', 'rev-list', 'rev-parse', 'revert', 'rm', 'shortlog', 'show', 'show-ref', 'stash', 'status',
+  'submodule', 'switch', 'symbolic-ref', 'tag', 'var', 'verify-commit', 'verify-tag', 'version', 'worktree',
+]);
+const GIT_CONFIG_READS = new Set(['--get', '--get-all', '--get-regexp', '--get-urlmatch', '--get-color', '--get-colorbool', '-l', '--list', 'get', 'list']);
+const GIT_CONFIG_WRITES = new Set(['--add', '--unset', '--unset-all', '--replace-all', '--rename-section', '--remove-section', '-e', '--edit', 'set', 'unset', 'edit', 'rename-section', 'remove-section']);
+const PUSH_DESTRUCTIVE = ['--force', '--force-with-lease', '--force-if-includes', '--mirror', '--delete', '--prune'];
 
 interface ParsedTargets {
   targets: string[];
@@ -30,8 +82,12 @@ interface ParsedTargets {
 }
 
 function normalizeCommand(command: string): string {
-  const base = path.basename(command).toLowerCase();
-  return base.replace(/\.(exe|cmd|bat|ps1)$/i, '');
+  let name = path.win32.basename(command).toLowerCase();
+  for (let previous = ''; previous !== name;) {
+    previous = name;
+    name = name.replace(COMMAND_SUFFIX, '');
+  }
+  return name;
 }
 
 function hasShellOperator(token: string): boolean {
@@ -142,6 +198,34 @@ function physicalDeleteTarget(rawTarget: string, cwd: string): string {
   return path.resolve(physicalPath(path.dirname(absolute)), path.basename(absolute));
 }
 
+/** Lexical problems with a target, before any path is resolved. */
+function targetProblem(raw: string): string | null {
+  if (hasWildcard(raw)) return `wildcard deletes are blocked: ${raw}`;
+  if (DRIVE_RELATIVE.test(raw)) return `drive-relative paths are blocked because they resolve against that drive's current folder: ${raw}`;
+  if (raw.replace(DRIVE_ABSOLUTE, '').includes(':')) return `a colon in a delete target is blocked (alternate data stream or device path): ${raw}`;
+  const segments = raw.split(/[\\/]/);
+  if (process.platform === 'win32' && segments.some((part) => part !== '.' && part !== '..' && /[. ]$/.test(part))) {
+    return `Windows ignores trailing dots and spaces in names, so this target is ambiguous: ${raw}`;
+  }
+  return null;
+}
+
+/** The protected directory a path lies in, judged by every segment below `root`. */
+function protectedDir(target: string, root: string): string | undefined {
+  const relative = path.relative(root, target);
+  if (relative === '' || path.isAbsolute(relative)) return undefined;
+  const segments = relative.split(path.sep).map((part) => part.toLowerCase());
+  return PROTECTED_DIRS.find((dir) => segments.includes(dir.toLowerCase()));
+}
+
+function realPathOrNull(value: string): string | null {
+  try {
+    return fs.realpathSync.native(value);
+  } catch {
+    return null;
+  }
+}
+
 function assessDelete(command: string, args: readonly string[], ctx: SafetyContext): SafetyDecision {
   const parsed = deleteTargets(command, args);
   if (parsed.reason) return block(command, true, parsed.reason);
@@ -153,7 +237,8 @@ function assessDelete(command: string, args: readonly string[], ctx: SafetyConte
   try {
     const physicalRoot = physicalPath(root);
     for (const rawTarget of rawTargets) {
-      if (hasWildcard(rawTarget)) return block(command, true, `wildcard deletes are blocked: ${rawTarget}`);
+      const problem = targetProblem(rawTarget);
+      if (problem !== null) return block(command, true, problem);
       const target = resolvedPath(rawTarget, ctx.cwd);
       if (isFilesystemRoot(target)) return block(command, true, `refusing to delete filesystem root: ${target}`);
       if (comparePath(target) === comparePath(root)) return block(command, true, `refusing to delete the project root: ${root}`);
@@ -161,6 +246,11 @@ function assessDelete(command: string, args: readonly string[], ctx: SafetyConte
       const physicalTarget = physicalDeleteTarget(rawTarget, ctx.cwd);
       if (comparePath(physicalTarget) === comparePath(physicalRoot)) return block(command, true, 'refusing to delete the physical project root');
       if (!isSameOrInside(physicalTarget, physicalRoot)) return block(command, true, `refusing to delete outside the physical project root (symlink or junction parent): ${target}`);
+      // The real path also catches 8.3 short names such as GIT~1.
+      const real = realPathOrNull(target);
+      const guarded = protectedDir(target, root) ?? protectedDir(physicalTarget, physicalRoot)
+        ?? (real === null ? undefined : protectedDir(real, physicalRoot));
+      if (guarded !== undefined) return block(command, true, `refusing to delete inside the protected ${guarded} directory: ${target}`);
       targets.push(target);
     }
   } catch (error: unknown) {
@@ -173,6 +263,93 @@ function assessDelete(command: string, args: readonly string[], ctx: SafetyConte
   return allow(command, true, targets, ['destructive command is limited to explicit paths inside the project root']);
 }
 
+/** `--fo` stands for `--force`: git accepts any unambiguous prefix of a long option. */
+function isAbbrev(arg: string, full: string, min = 3): boolean {
+  const name = (arg.split('=')[0] ?? '').toLowerCase();
+  return name.length >= min && full.startsWith(name);
+}
+
+/** Letters of a bundled short option such as `-uf`; empty for anything else. */
+function shortFlags(arg: string): string {
+  return /^-[A-Za-z0-9]+$/.test(arg) ? arg.slice(1) : '';
+}
+
+function discardsWorktree(args: readonly string[]): boolean {
+  return args.some((arg) => shortFlags(arg).includes('f') || isAbbrev(arg, '--force') || isAbbrev(arg, '--discard-changes'));
+}
+
+function isDestructivePushArg(arg: string): boolean {
+  if (/^[+:]/.test(arg)) return true; // `+ref` forces, `:ref` deletes
+  if (shortFlags(arg) !== '') return /[fd]/.test(shortFlags(arg));
+  return PUSH_DESTRUCTIVE.some((option) => isAbbrev(arg, option));
+}
+
+function isConfigRead(args: readonly string[]): boolean {
+  return args.some((arg) => GIT_CONFIG_READS.has(arg)) && !args.some((arg) => GIT_CONFIG_WRITES.has(arg));
+}
+
+function stashRule(args: readonly string[]): string | null {
+  const action = args.find((arg) => !arg.startsWith('-'));
+  return action === 'drop' || action === 'clear' ? `git stash ${action} deletes stashed work` : null;
+}
+
+function branchRule(args: readonly string[]): string | null {
+  const flags = args.map(shortFlags).join('');
+  const deleting = flags.includes('d') || args.some((arg) => isAbbrev(arg, '--delete'));
+  const forcing = flags.includes('f') || args.some((arg) => isAbbrev(arg, '--force'));
+  return flags.includes('D') || (deleting && forcing) ? 'git branch force-delete can lose unmerged commits' : null;
+}
+
+/** Subcommand rules: a reason when the call can discard work or plant code, otherwise null. */
+const GIT_RULES: Readonly<Record<string, ArgsRule>> = {
+  clean: () => 'git clean can erase untracked work broadly; delete explicit paths with cws safe-run instead',
+  reset: (args) => (args.some((arg) => isAbbrev(arg, '--hard')) ? 'git reset --hard is blocked because it discards worktree changes' : null),
+  push: (args) => (args.some(isDestructivePushArg) ? 'git push that forces, mirrors, prunes or deletes remote refs is blocked' : null),
+  checkout: (args) => (args.includes('--') || args.includes('.') || discardsWorktree(args)
+    ? 'git checkout that overwrites worktree files is blocked; run it yourself in your terminal' : null),
+  switch: (args) => (discardsWorktree(args) ? 'git switch that discards worktree changes is blocked' : null),
+  restore: () => 'git restore discards worktree changes; run it yourself in your terminal',
+  stash: stashRule,
+  branch: branchRule,
+  config: (args) => (isConfigRead(args) ? null : 'git config writes are blocked: aliases and hooks set there run arbitrary programs'),
+};
+
+function gitGlobalProblem(globals: readonly string[]): string | null {
+  if (globals.some((arg) => arg.startsWith('-c') || isAbbrev(arg, '--config-env', 4))) {
+    return 'git -c and --config-env are blocked: inline config can define aliases and hooks that run arbitrary programs';
+  }
+  if (globals.some((arg) => arg.startsWith('--exec-path='))) return 'git --exec-path is blocked: it points git at other programs';
+  return null;
+}
+
+function gitRule(args: readonly string[]): string | null {
+  let index = 0;
+  while (index < args.length && args[index]!.startsWith('-')) index += GIT_VALUE_GLOBALS.has(args[index]!) ? 2 : 1;
+  const subcommand = args[index]?.toLowerCase();
+  // The subcommand verdict comes first so `git -c x clean` still reads as a git clean.
+  const subcommandProblem = subcommand === undefined ? null : GIT_RULES[subcommand]?.(args.slice(index + 1)) ?? null;
+  if (subcommandProblem !== null) return subcommandProblem;
+  const globalProblem = gitGlobalProblem(args.slice(0, index));
+  if (globalProblem !== null) return globalProblem;
+  if (subcommand !== undefined && !GIT_SUBCOMMANDS.has(subcommand)) {
+    return `git ${subcommand} is not a built-in git command; aliases and git-<name> helpers can run anything`;
+  }
+  return null;
+}
+
+function runnerRule(subcommands: readonly string[]): ArgsRule {
+  return (args) => (args.some((arg) => subcommands.includes(arg.toLowerCase()))
+    ? 'package runners download and run code the guard cannot inspect; run it yourself in your terminal' : null);
+}
+
+/** Per-command rules for programs that are fine in general but destructive with some arguments. */
+const COMMAND_RULES: Readonly<Record<string, ArgsRule>> = {
+  git: gitRule,
+  find: (args) => (args.some((arg) => FIND_ACTIONS.has(arg.toLowerCase())) ? 'find with -delete, -exec or -ok actions is blocked; delete explicit paths instead' : null),
+  robocopy: (args) => (args.some((arg) => ROBOCOPY_DESTRUCTIVE.test(arg)) ? 'robocopy /MIR, /PURGE and /MOVE delete files at the destination' : null),
+  ...Object.fromEntries(Object.entries(RUNNER_SUBCOMMANDS).map(([name, subcommands]) => [name, runnerRule(subcommands)])),
+};
+
 export function assessCommandSafety(argv: readonly string[], ctx: SafetyContext): SafetyDecision {
   const commandArg = argv[0];
   if (commandArg === undefined) return block('', false, 'no command provided');
@@ -182,17 +359,11 @@ export function assessCommandSafety(argv: readonly string[], ctx: SafetyContext)
   const operator = argv.find(hasShellOperator);
   if (operator !== undefined) return block(command, false, `shell operator is not allowed in guarded commands: ${operator}`);
 
-  if (SHELL_COMMANDS.has(command)) {
-    return block(command, false, 'inline shell commands are blocked; pass the command and arguments directly to cws safe-run');
-  }
+  const launcher = LAUNCHERS.find((entry) => entry.pattern.test(command));
+  if (launcher !== undefined) return block(command, true, launcher.reason);
 
-  if (command === 'git' && args.some((arg) => arg.toLowerCase() === 'clean')) {
-    return block(command, true, 'git clean can erase untracked work broadly; delete explicit paths with cws safe-run instead');
-  }
-
-  if (command === 'git' && args.some((arg) => arg.toLowerCase() === '--hard')) {
-    return block(command, true, 'git reset --hard is blocked because it discards worktree changes');
-  }
+  const problem = COMMAND_RULES[command]?.(args) ?? null;
+  if (problem !== null) return block(command, true, problem);
 
   if (DELETE_COMMANDS.has(command)) return assessDelete(command, args, ctx);
 

@@ -71,7 +71,9 @@ function options(state: ProjectState): string[] {
 
 async function startOrEndSession(env: Env, state: ProjectState, run: RunCommand): Promise<void> {
   if (activeSession(state)) {
-    const summary = await askLine(env, 'What did you get out of it? (Enter to skip) ');
+    const summary = await askLine(env, 'What did you get out of it? (Enter for none) ');
+    // An empty answer is also what end of input (Ctrl+D) gives, so ending without a summary is asked again.
+    if (!summary && (await askLine(env, 'End the session without a summary? (y/N) ')).toLowerCase() !== 'y') throw new Cancelled();
     await run(['session', 'end', ...(summary ? ['--summary', summary] : [])]);
     return;
   }
@@ -131,7 +133,7 @@ async function noProject(env: Env, run: RunCommand): Promise<void> {
   say(env, 'No project here yet.', '', '1  Start a project in this folder', 'Enter  Quit');
   if ((await askLine(env, '> ')) !== '1') return;
   const title = await askLine(env, 'What is your idea called? ');
-  if (title) await run(['init', title]);
+  if (title) await run(['init', '--', title]);
 }
 
 async function choose(env: Env, choice: string, state: ProjectState, run: RunCommand): Promise<void> {
@@ -172,7 +174,13 @@ async function menu(env: Env, run: RunCommand): Promise<void> {
 
 /** `cws` with no arguments: a guided menu at a terminal, the usual help everywhere else. */
 export function registerMenu(program: Command, env: Env, run: RunCommand): void {
+  // The root action would otherwise swallow `cws bogus` as an excess argument.
+  program.allowExcessArguments(true);
   program.action(async () => {
+    const [unknown] = program.args;
+    if (unknown !== undefined) {
+      program.error(`error: unknown command '${unknown}' (see \`cws --help\`)`, { code: 'commander.unknownCommand' });
+    }
     if (!env.io.isInteractive) {
       program.outputHelp();
       return;

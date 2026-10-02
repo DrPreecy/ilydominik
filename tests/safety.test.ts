@@ -165,6 +165,96 @@ describe('command safety guard', () => {
       { cwd: alias, projectRoot: alias }).ok, false);
   });
 
+  it('sees through Windows trailing dots, spaces and extensions on the command name', () => {
+    for (const command of ['rm.', 'rm.exe.', 'rm.exe ', 'RM.EXE', 'rm.com', 'C:\\bin\\rm.exe.', 'rm.exe::$DATA']) {
+      const result = assess([command, '-rf', '/outside']);
+      assert.equal(result.ok, false, command);
+      assert.match(result.reason ?? '', /outside|filesystem root/i, command);
+    }
+    for (const command of ['cmd.', 'cmd.exe ', 'bash.exe.']) {
+      assert.match(assess([command, '/c', 'echo']).reason ?? '', /shell/i, command);
+    }
+    assert.match(assess(['git.', 'reset', '--hard']).reason ?? '', /reset --hard/i);
+  });
+
+  it('refuses drive-relative and alternate-data-stream delete targets', () => {
+    for (const target of ['E:..\\..\\Dev', 'E:..', 'c:dist', 'src:stream', 'dist\\a.txt:hidden', 'dist::$DATA']) {
+      const result = assess(['rm', '-rf', target]);
+      assert.equal(result.ok, false, target);
+      assert.match(result.reason ?? '', /drive-relative|colon|stream/i, target);
+    }
+  });
+
+  it('protects .git and .cws and everything under them', () => {
+    for (const target of ['.git', '.git/objects', '../.git', '../.cws', '../.cws/events.jsonl', '../.GIT/HEAD',
+      ...(process.platform === 'win32' ? ['../.git.', '../.cws ', '..\\.git\\'] : [])]) {
+      const result = assess(['rm', '-rf', target]);
+      assert.equal(result.ok, false, target);
+      assert.match(result.reason ?? '', /protected|\.git|\.cws|trailing/i, target);
+    }
+    assert.equal(assess(['rm', '-rf', 'dist/.gitkeep']).ok, true);
+    assert.equal(assess(['rm', '-rf', '../.github-cache']).ok, true);
+  });
+
+  it('blocks destructive git forms, including abbreviated options', () => {
+    for (const args of [
+      ['git', 'reset', '--h'], ['git', 'reset', '--har', 'HEAD~1'],
+      ['git', 'push', '--force'], ['git', 'push', '-f'], ['git', 'push', '-uf', 'origin', 'main'],
+      ['git', 'push', '--forc'], ['git', 'push', '--force-with-lease=main'], ['git', 'push', '--mirror'],
+      ['git', 'push', '--delete', 'origin', 'x'], ['git', 'push', 'origin', '+main'], ['git', 'push', 'origin', ':main'],
+      ['git', 'checkout', '-f'], ['git', 'checkout', '--', 'src'], ['git', 'checkout', '.'],
+      ['git', 'switch', '--discard-changes', 'main'], ['git', 'restore', 'src'],
+      ['git', 'stash', 'drop'], ['git', 'stash', 'clear'], ['git', 'branch', '-D', 'x'],
+      ['git', 'branch', '--delete', '--force', 'x'], ['git', 'clean', '-n'],
+    ]) {
+      const result = assess(args);
+      assert.equal(result.ok, false, args.join(' '));
+      assert.equal(result.destructive, true, args.join(' '));
+    }
+    for (const args of [['git', 'status'], ['git', 'push', 'origin', 'main'], ['git', 'checkout', 'main'],
+      ['git', 'branch', '-d', 'merged'], ['git', 'stash', 'list'], ['git', 'config', '--get', 'user.name'], ['git', '--version']]) {
+      assert.equal(assess(args).ok, true, args.join(' '));
+    }
+  });
+
+  it('blocks git config injection, config writes and unknown subcommands that may be aliases', () => {
+    for (const args of [
+      ['git', '-c', 'alias.st=!rm -rf /', 'st'], ['git', '-calias.x=!sh', 'x'], ['git', '--config-env=core.pager=X', 'log'],
+      ['git', '--exec-path=/tmp/evil', 'status'], ['git', 'config', 'alias.st', '!rm -rf /'],
+      ['git', 'config', 'core.hooksPath', '/tmp'], ['git', 'nuke'], ['git', '-C', '.', 'my-alias'],
+    ]) {
+      const result = assess(args);
+      assert.equal(result.ok, false, args.join(' '));
+      assert.match(result.reason ?? '', /git/i, args.join(' '));
+    }
+  });
+
+  it('blocks wrappers, interpreters and package runners that hide the real command', () => {
+    for (const command of ['env', 'sudo', 'doas', 'xargs', 'busybox', 'wsl', 'wsl.exe', 'node', 'node.exe', 'deno', 'bun',
+      'python', 'python3', 'python3.12', 'py', 'perl', 'ruby', 'npx', 'pnpx', 'bunx', 'dash', 'fish', 'ksh', 'zsh',
+      'pwsh', 'pwsh-preview', 'powershell_ise', 'nohup', 'timeout']) {
+      const result = assess([command, 'rm', '-rf', '/']);
+      assert.equal(result.ok, false, command);
+      assert.equal(result.destructive, true, command);
+    }
+    for (const args of [['npm', 'exec', 'rimraf', '/'], ['npm', 'x', 'rimraf'], ['pnpm', 'dlx', 'rimraf'], ['yarn', 'dlx', 'rimraf']]) {
+      assert.equal(assess(args).ok, false, args.join(' '));
+    }
+    assert.equal(assess(['npm', 'run', 'build']).ok, true);
+  });
+
+  it('blocks find with actions and robocopy mirroring', () => {
+    for (const args of [['find', '.', '-delete'], ['find', '.', '-name', 'x', '-exec', 'rm', '{}', '+'],
+      ['find', '.', '-execdir', 'rm', '{}', '+'], ['find', '.', '-okdir', 'rm'],
+      ['robocopy', 'empty', 'dist', '/MIR'], ['robocopy', 'a', 'b', '/purge'], ['robocopy.exe', 'a', 'b', '/MOVE']]) {
+      const result = assess(args);
+      assert.equal(result.ok, false, args.join(' '));
+      assert.equal(result.destructive, true, args.join(' '));
+    }
+    assert.equal(assess(['find', '.', '-name', 'x.ts']).ok, true);
+    assert.equal(assess(['robocopy', 'a', 'b', '/E']).ok, true);
+  });
+
   it('blocks builtins in both CLI check and execution modes without spawning a shell', async () => {
     for (const check of [true, false]) {
       const errors: string[] = [];

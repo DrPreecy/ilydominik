@@ -1,5 +1,5 @@
 import type { Command } from 'commander';
-import { defaultConfig, loadIntegrations, type IntegrationsConfig, type SandboxMode } from '../../integrations/config.ts';
+import { defaultConfig, loadIntegrations, toolOverride, type IntegrationsConfig, type SandboxMode, type ToolName } from '../../integrations/config.ts';
 import { findExecutable, isBatchShim, runTool, toolVersion, type RunResult } from '../../integrations/exec.ts';
 import { EXIT } from '../io.ts';
 import { projectRoot, say, type Env } from '../human.ts';
@@ -46,7 +46,7 @@ export const PROBES: readonly Probe[] = [
   { name: 'copilot', command: 'copilot', purpose: 'Copilot CLI', hint: 'npm i -g @github/copilot' },
 ];
 
-const TOOL_OVERRIDES: Readonly<Record<string, keyof IntegrationsConfig['tools']>> = {
+const TOOL_OVERRIDES: Readonly<Record<string, ToolName>> = {
   ocr: 'ocr',
   openshell: 'openshell',
   'openshell-prover': 'prover',
@@ -66,10 +66,11 @@ export interface DoctorDeps {
   run?(file: string, args: readonly string[]): Promise<RunResult>;
 }
 
-export function probesFor(config: IntegrationsConfig): Probe[] {
+/** Probes with the tool paths set in the environment (CWS_TOOL_*); a repo file never sets them. */
+export function probesFor(env: NodeJS.ProcessEnv = process.env): Probe[] {
   return PROBES.map((probe) => {
     const key = TOOL_OVERRIDES[probe.name];
-    const override = key === undefined ? undefined : config.tools[key];
+    const override = key === undefined ? undefined : toolOverride(key, env);
     return override === undefined ? { ...probe } : { ...probe, command: override };
   });
 }
@@ -135,7 +136,7 @@ function toolLine(result: ProbeResult): string {
 
 export function reportLines(
   results: readonly ProbeResult[],
-  ctx: { host: HostKind; configFile: string | null; configProblem?: string; mode: SandboxMode; project: boolean },
+  ctx: { host: HostKind; configFile: string | null; configProblem?: string; configIgnored?: string; mode: SandboxMode; project: boolean },
 ): string[] {
   const required = results.filter((r) => r.probe.required === true);
   const optional = results.filter((r) => r.probe.required !== true);
@@ -145,6 +146,7 @@ export function reportLines(
     '',
     `Project memory:  ${ctx.project ? 'yes' : 'no — run `cws init "<title>"` here'}`,
     `Integrations:    ${ctx.configFile === null ? 'none' : ctx.configFile} (${settings})`,
+    ...(ctx.configIgnored === undefined ? [] : [`Ignored:         ${ctx.configIgnored}`]),
     `Sandbox mode:    ${ctx.mode} — ${MODE_MEANING[ctx.mode]}`,
     '',
     'Required',
@@ -158,9 +160,9 @@ export function reportLines(
 export async function doctor(env: Env, opts: { deep?: boolean } = {}): Promise<number> {
   const host = hostKind();
   const root = projectRoot(env);
-  const loaded =
+  const loaded: { config: IntegrationsConfig; file: string | null; problem?: string; ignored?: string } =
     root === null
-      ? { config: defaultConfig(), file: null as string | null, problem: 'no project here; defaults in use' }
+      ? { config: defaultConfig(), file: null, problem: 'no project here; defaults in use' }
       : await loadIntegrations(root);
   const config = loaded.config;
   const results = await probeAll(
@@ -169,7 +171,7 @@ export async function doctor(env: Env, opts: { deep?: boolean } = {}): Promise<n
       version: (file, args) => toolVersion(file, args),
       ...(opts.deep === true ? { run: (file: string, args: readonly string[]) => runTool(file, args, { timeoutMs: 8_000 }) } : {}),
     },
-    probesFor(config),
+    probesFor(),
   );
 
   const has = (name: string): boolean => results.some((r) => r.probe.name === name && r.file !== null);
@@ -185,6 +187,7 @@ export async function doctor(env: Env, opts: { deep?: boolean } = {}): Promise<n
     host,
     configFile: loaded.file,
     ...(loaded.problem === undefined ? {} : { configProblem: loaded.problem }),
+    ...(loaded.ignored === undefined ? {} : { configIgnored: loaded.ignored }),
     mode,
     project: root !== null,
   });

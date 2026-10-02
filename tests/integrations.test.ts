@@ -7,11 +7,13 @@ import { z } from 'zod';
 import { runCli } from '../src/cli/app.ts';
 import { doctor, hostKind, probeAll, probesFor, reportLines, resolveSandboxMode, PROBES } from '../src/cli/commands/doctor.ts';
 import { EXIT, type CliIO } from '../src/cli/io.ts';
-import { defaultConfig, loadIntegrations } from '../src/integrations/config.ts';
+import { defaultConfig, loadIntegrations, toolOverride } from '../src/integrations/config.ts';
+import { rulesArgs } from '../src/integrations/ocr.ts';
 import {
   findExecutable,
   firstLine,
   isBatchShim,
+  resolveToolCommand,
   runTool,
   runToolJson,
   toolVersion,
@@ -124,10 +126,50 @@ describe('runTool', () => {
     assert.match(result.stderr, /NUL or line break/);
   });
 
+  it('resolves instead of rejecting when spawn throws synchronously', async () => {
+    const result = await runTool(NODE, ['-e', ''], { env: { BAD: 'a\0b' } });
+    assert.equal(result.ok, false);
+    assert.ok(result.stderr.length > 0);
+  });
+
+  it('kills the whole process tree on timeout', async () => {
+    const script = "const c = require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' }); console.log(c.pid); setTimeout(() => {}, 30000);";
+    const result = await runTool(NODE, ['-e', script], { timeoutMs: 1500 });
+    assert.equal(result.timedOut, true);
+    const grandchild = Number(result.stdout.trim());
+    assert.ok(grandchild > 0, result.stdout);
+    const alive = (): boolean => {
+      try {
+        process.kill(grandchild, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    for (let tries = 0; tries < 40 && alive(); tries += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(alive(), false);
+  });
+
   it('passes shell-looking arguments through untouched', async () => {
     const result = await runTool(NODE, ['-e', "process.stdout.write(process.argv[1])", 'a; rm -rf /']);
     assert.equal(result.ok, true);
     assert.equal(result.stdout, 'a; rm -rf /');
+  });
+});
+
+describe('tool commands', () => {
+  it('runs a script override through node and finds plain programs on PATH', async () => {
+    const script = path.join(base, 'stub.mjs');
+    await fs.writeFile(script, '');
+    assert.deepEqual(resolveToolCommand(script), { file: NODE, prefix: [script] });
+    assert.equal(resolveToolCommand(path.join(base, 'missing.mjs')), null);
+    assert.deepEqual(resolveToolCommand(NODE), { file: NODE, prefix: [] });
+  });
+
+  it('puts ocr flags before the -- that ends options, so a file name cannot become a flag', () => {
+    assert.deepEqual(rulesArgs(['--repo=/tmp/evil', 'a.go'], { from: 'main' }), [
+      'delegate', 'rule', '--format', 'json', '--from', 'main', '--', '--repo=/tmp/evil', 'a.go',
+    ]);
   });
 });
 
@@ -193,17 +235,25 @@ describe('integrations config', () => {
     assert.equal(loaded.problem, undefined);
   });
 
-  it('reads a valid file and keeps unknown tools out', async () => {
+  it('reads a valid file but never takes tool paths from the repository', async () => {
     await fs.mkdir(path.join(base, '.cws'));
     await fs.writeFile(
       path.join(base, '.cws', 'integrations.json'),
-      JSON.stringify({ version: 1, sandbox: { mode: 'wsl', wslDistro: 'Ubuntu' }, tools: { ocr: '/usr/bin/ocr' } }),
+      JSON.stringify({ version: 1, sandbox: { mode: 'wsl', wslDistro: 'Ubuntu' }, tools: { ocr: '/tmp/evil', openshell: '/tmp/evil' } }),
     );
     const loaded = await loadIntegrations(base);
     assert.equal(loaded.config.sandbox.mode, 'wsl');
     assert.equal(loaded.config.sandbox.wslDistro, 'Ubuntu');
-    assert.equal(loaded.config.tools.ocr, '/usr/bin/ocr');
+    assert.equal('tools' in loaded.config, false);
     assert.equal(loaded.problem, undefined);
+    assert.match(loaded.ignored ?? '', /tools\.ocr, tools\.openshell/);
+    assert.match(loaded.ignored ?? '', /CWS_TOOL_OCR/);
+  });
+
+  it('takes tool overrides from environment variables only', () => {
+    assert.equal(toolOverride('ocr', { CWS_TOOL_OCR: '/opt/ocr' }), '/opt/ocr');
+    assert.equal(toolOverride('openshell', { CWS_TOOL_OPENSHELL: '  ' }), undefined);
+    assert.equal(toolOverride('prover', {}), undefined);
   });
 
   it('reports a problem and uses defaults for broken files', async () => {
@@ -215,6 +265,19 @@ describe('integrations config', () => {
     assert.match((await loadIntegrations(base)).problem ?? '', /sandbox\.mode/);
   });
 });
+
+function quietIO(cwd: string): CliIO {
+  return {
+    cwd,
+    isInteractive: false,
+    stdout: () => undefined,
+    stderr: () => undefined,
+    ask: async () => '',
+    readStdin: async () => '',
+    challenge: () => 'CODE',
+    copy: async () => false,
+  };
+}
 
 describe('doctor', () => {
   it('detects the kind of host it runs on', () => {
@@ -236,10 +299,22 @@ describe('doctor', () => {
     assert.equal(resolveSandboxMode({ ...config, sandbox: { mode: 'off' } }, 'codespace', { ...none, docker: true }), 'off');
   });
 
-  it('lets the config override a tool path', () => {
-    const probes = probesFor({ ...defaultConfig(), tools: { ocr: '/opt/ocr' } });
+  it('lets an environment variable override a tool path', () => {
+    const probes = probesFor({ CWS_TOOL_OCR: '/opt/ocr' });
     assert.equal(probes.find((p) => p.name === 'ocr')?.command, '/opt/ocr');
     assert.equal(probes.find((p) => p.name === 'openshell-prover')?.command, 'openshell-prover');
+    assert.equal(probesFor({ CWS_TOOL_PROVER: '/opt/prover' }).find((p) => p.name === 'openshell-prover')?.command, '/opt/prover');
+  });
+
+  it('never runs a tool path planted in the repository config', async () => {
+    assert.equal(await runCli(['init', 'Planted'], { ...quietIO(base), isInteractive: true }), EXIT.OK);
+    const planted = path.join(base, 'planted-ocr.exe');
+    await fs.writeFile(planted, '');
+    await fs.writeFile(path.join(base, '.cws', 'integrations.json'), JSON.stringify({ version: 1, tools: { ocr: planted } }));
+    const out: string[] = [];
+    assert.equal(await runCli(['doctor'], { ...quietIO(base), stdout: (text) => void out.push(text) }), EXIT.OK);
+    assert.doesNotMatch(out.join(''), /planted-ocr/);
+    assert.match(out.join(''), /Ignored: .*tools\.ocr.*CWS_TOOL_OCR/);
   });
 
   it('probes tools and notes whether a service answers', async () => {

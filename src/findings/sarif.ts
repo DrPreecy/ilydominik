@@ -7,7 +7,7 @@
  */
 
 import { z } from 'zod';
-import { normalizePath, redactSecrets, type Finding, type Severity } from './types.ts';
+import { locatePath, redactSecrets, type Finding, type Severity } from './types.ts';
 
 const regionSchema = z
   .object({
@@ -50,6 +50,7 @@ const resultSchema = z
   .object({
     ruleId: z.string().optional(),
     ruleIndex: z.number().int().optional(),
+    rule: z.object({ id: z.string().optional(), index: z.number().int().optional() }).passthrough().optional(),
     level: z.string().optional(),
     message: z.object({ text: z.string().optional(), markdown: z.string().optional() }).passthrough().optional(),
     locations: z.array(locationSchema).optional(),
@@ -124,7 +125,7 @@ export function severityFor(level: string | undefined, securitySeverity: string 
   }
 }
 
-/** SARIF URIs are often `file:///abs/path` or percent-encoded. */
+/** SARIF URIs are often `file:///abs/path` or percent-encoded; absolute paths stay absolute. */
 export function uriToPath(uri: string): string {
   let value = uri;
   if (value.startsWith('file://')) value = value.slice('file://'.length);
@@ -133,7 +134,7 @@ export function uriToPath(uri: string): string {
   } catch {
     // keep the raw value when it is not valid percent-encoding
   }
-  return normalizePath(value);
+  return locatePath(value).path;
 }
 
 export interface ParseSarifOptions {
@@ -141,6 +142,21 @@ export interface ParseSarifOptions {
   tool?: string;
   /** how many results to keep; the rest are dropped */
   limit?: number;
+  /** project root: absolute paths inside it become repo-relative, the rest are marked external */
+  root?: string;
+}
+
+type SarifRun = SarifDocument['runs'][number];
+type SarifRule = NonNullable<NonNullable<NonNullable<SarifRun['tool']>['driver']>['rules']>[number];
+type SarifResult = NonNullable<SarifRun['results']>[number];
+
+/** `ruleId`, then the `rule` reference, then the rule the index points at: the fingerprint needs the rule. */
+function ruleOf(result: SarifResult, rules: readonly SarifRule[]): { rule: SarifRule | undefined; ruleId: string | undefined } {
+  const index = result.ruleIndex ?? result.rule?.index;
+  const named = result.ruleId ?? result.rule?.id;
+  const rule = index === undefined ? rules.find((r) => named !== undefined && r.id === named) : rules[index];
+  const ruleId = [named, rule?.id].find((id) => id !== undefined && id !== '');
+  return { rule, ruleId };
 }
 
 export function parseSarif(raw: unknown, opts: ParseSarifOptions = {}): Finding[] {
@@ -153,7 +169,7 @@ export function parseSarif(raw: unknown, opts: ParseSarifOptions = {}): Finding[
     const rules = driver?.rules ?? [];
 
     for (const result of run.results ?? []) {
-      const rule = result.ruleIndex === undefined ? rules.find((r) => r.id === result.ruleId) : rules[result.ruleIndex];
+      const { rule, ruleId } = ruleOf(result, rules);
       const physical = result.locations?.[0]?.physicalLocation;
       const uri = physical?.artifactLocation?.uri;
       if (uri === undefined || uri === '') continue;
@@ -161,13 +177,15 @@ export function parseSarif(raw: unknown, opts: ParseSarifOptions = {}): Finding[
       const security = rule?.properties?.['security-severity'];
       const message = result.message?.text ?? result.message?.markdown ?? rule?.shortDescription?.text ?? 'finding';
       const snippet = physical?.region?.snippet?.text;
+      const place = locatePath(uriToPath(uri), opts.root);
       findings.push({
         tool,
-        ...(result.ruleId === undefined || result.ruleId === '' ? {} : { ruleId: result.ruleId }),
+        ...(ruleId === undefined ? {} : { ruleId }),
         message: redactSecrets(message, 1000),
         severity: severityFor(result.level ?? rule?.defaultConfiguration?.level, security),
         ...(tags.length === 0 ? {} : { category: tags[0] ?? '' }),
-        path: uriToPath(uri),
+        path: place.path,
+        ...(place.external ? { external: true } : {}),
         ...(physical?.region?.startLine === undefined ? {} : { startLine: physical.region.startLine }),
         ...(physical?.region?.endLine === undefined ? {} : { endLine: physical.region.endLine }),
         ...(snippet === undefined || snippet === '' ? {} : { snippet: redactSecrets(snippet, 400) }),

@@ -1,4 +1,5 @@
 import type { Actor, Claim, CwsEvent, ProjectState, ProposedItem, Warning } from '../domain/types.ts';
+import { awaitsReview } from '../guidance/warnings.ts';
 
 const MAX_TEXT = 100;
 // eslint-disable-next-line no-control-regex
@@ -78,5 +79,5 @@ export function pendingProposals(state: ProjectState) {
 }
 
 export function unconfirmedAiClaims(state: ProjectState): Claim[] {
-  return state.claims.filter((c) => !c.confirmed && c.createdBy.kind === 'ai' && c.status !== 'RETIRED');
+  return state.claims.filter(awaitsReview);
 }

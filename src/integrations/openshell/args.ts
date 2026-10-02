@@ -100,7 +100,12 @@ export function ruleRejectArgs(name: string, chunkId: string, reason?: string): 
   return args;
 }
 
-/** The upload spec for mounting the project into the sandbox at `/sandbox`. */
+/**
+ * The upload spec for mounting the project into the sandbox at `/sandbox`. A colon in the
+ * host path (`E:\p`) would make `SRC:DST` ambiguous, so it is refused; callers on native
+ * Windows pass `.` with the project as the working directory instead.
+ */
 export function projectUpload(hostPath: string): string {
+  if (hostPath.includes(':')) throw new Error(`the upload path may not contain a colon, which separates it from the sandbox path: ${hostPath}`);
   return `${hostPath}:/sandbox`;
 }
