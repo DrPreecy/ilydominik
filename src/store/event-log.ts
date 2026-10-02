@@ -104,6 +104,14 @@ function isErrno(err: unknown, code: string): boolean {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Gone, or about to be: Windows answers EPERM (sometimes EBUSY) when a file another process
+ * is deleting is opened, so for lock and marker files those mean "retry", like ENOENT.
+ */
+function isVanishing(err: unknown): boolean {
+  return isErrno(err, 'ENOENT') || (process.platform === 'win32' && (isErrno(err, 'EPERM') || isErrno(err, 'EBUSY')));
+}
+
 function ownerStatus(raw: string): 'dead' | 'live' | 'unverifiable' {
   let owner: unknown;
   try {
@@ -140,15 +148,17 @@ async function acquireRecovery(recoveryPath: string, owner: string): Promise<boo
     } catch (err) {
       if (!isErrno(err, 'EEXIST')) throw err;
     }
+    let current: string;
     try {
-      const current = await fs.readFile(recoveryPath, 'utf8');
-      if (ownerStatus(current) === 'live') return false;
-      throw recoveryBlocked(recoveryPath);
+      current = await fs.readFile(recoveryPath, 'utf8');
     } catch (err) {
-      if (isErrno(err, 'ENOENT')) return false;
       if (isErrno(err, 'EISDIR')) throw recoveryBlocked(recoveryPath);
+      if (isVanishing(err) && !(await isDirectory(recoveryPath))) return false;
+      if (isErrno(err, 'EPERM') || isErrno(err, 'EACCES')) throw recoveryBlocked(recoveryPath);
       throw err;
     }
+    if (ownerStatus(current) === 'live') return false;
+    throw recoveryBlocked(recoveryPath);
   } finally {
     await fs.unlink(preparedPath);
   }
@@ -169,11 +179,16 @@ async function takeOver(lockPath: string, owner: string): Promise<boolean> {
       throw err;
     }
   } catch (err) {
-    if (isErrno(err, 'ENOENT')) return false;
+    if (isVanishing(err)) return false;
     throw err;
   } finally {
     await fs.unlink(recoveryPath);
   }
+}
+
+/** A recovery marker left as a directory (a legacy form) is abandoned, never "being deleted". */
+async function isDirectory(file: string): Promise<boolean> {
+  return (await fs.stat(file).catch(() => null))?.isDirectory() === true;
 }
 
 /** Acquire the lock; returns the nonce that proves ownership. */

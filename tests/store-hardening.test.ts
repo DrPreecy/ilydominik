@@ -114,6 +114,35 @@ describe('crash recovery', () => {
     assert.equal((await EventLog.open(dir)).state.title, 'recovered');
   });
 
+  it('treats a recovery marker that is being deleted (EPERM on Windows) as gone and retries', { skip: process.platform !== 'win32' }, async (t) => {
+    await EventLog.init(dir, 'p');
+    const lockPath = path.join(dir, CWS_DIR, 'lock');
+    const recoveryPath = `${lockPath}.recovery`;
+    const deadPid = 999999;
+    const originalKill = process.kill.bind(process);
+    t.mock.method(process, 'kill', (pid: number, signal?: Parameters<typeof process.kill>[1]) => {
+      if (pid === deadPid) throw Object.assign(new Error('dead owner'), { code: 'ESRCH' });
+      return originalKill(pid, signal);
+    });
+    await fs.writeFile(lockPath, JSON.stringify({ pid: deadPid, nonce: 'dead' }));
+    // Another contender's marker exists and is mid-delete: reading it fails with EPERM once.
+    await fs.writeFile(recoveryPath, JSON.stringify({ pid: deadPid, nonce: 'other' }));
+    const originalRead = fs.readFile.bind(fs);
+    let pending = true;
+    t.mock.method(fs, 'readFile', async (...args: Parameters<typeof fs.readFile>) => {
+      if (pending && String(args[0]) === recoveryPath) {
+        pending = false;
+        await fs.rm(recoveryPath);
+        throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+      }
+      return originalRead(...args);
+    });
+    const log = await EventLog.open(dir);
+    await log.append({ type: 'NOTE_ADDED', actor: HUMAN, payload: { noteId: 'n1', text: 'after a vanishing marker' } });
+    assert.equal(pending, false);
+    assert.equal((await EventLog.open(dir)).state.notes.length, 1);
+  });
+
   it('a lock left behind by a crash times out with recovery guidance', async () => {
     const log = await EventLog.init(dir, 'p');
     await fs.writeFile(path.join(dir, CWS_DIR, 'lock'), '');
