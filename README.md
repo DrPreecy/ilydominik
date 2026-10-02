@@ -70,7 +70,7 @@ Secrets are redacted before anything is stored and in every prompt context, and 
 
 `safe-run` guards a command; it does not isolate it. When [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) is installed, CWS can put agent work in a sandbox whose network access is a file you approve:
 
-1. `cws sandbox policy --rule api.github.com:443` records the rule (with a confirmation code) as a decision. Nothing else is reachable — no wildcards, no query strings, no plain-TCP bypass, no local or cloud-metadata addresses. `.cws/sandbox/policy.yaml` is rebuilt from the approved rules before every run, so editing it by hand changes nothing.
+1. `cws sandbox policy --rule api.github.com:443` records the rule (with a confirmation code) as a decision. Nothing else is reachable — no wildcards, no query strings, no plain-TCP bypass, no local or cloud-metadata addresses. The event log is the source of approved rules; `.cws/sandbox/rules.json` can narrow logged grants but cannot add or widen access. `.cws/sandbox/policy.yaml` is rebuilt from logged approvals before every run.
 2. `cws sandbox run -- <command>` creates a sandbox with that policy, uploads the project, runs one command, reports its exit code and deletes the sandbox again (`--keep` leaves it running). Add `--claim <id>` to attach the run as evidence.
 3. A request the sandbox is not allowed to make becomes a pending rule. `cws sandbox rules` lists them; `cws sandbox rules --approve <chunk-id>` (with a confirmation code) or `--reject <chunk-id> --reason "..."` answers one, and your answer is recorded as a decision.
 

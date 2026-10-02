@@ -95,6 +95,16 @@ describe('runTool', () => {
     assert.equal(result.timedOut, false);
   });
 
+  it('passes explicitly supplied stdin to the child process', async () => {
+    const result = await runTool(
+      NODE,
+      ['-e', "let input = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => process.stdout.write(input));"],
+      { stdin: 'captured input' },
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.stdout, 'captured input');
+  });
+
   it('reports a non-zero exit without throwing', async () => {
     const result = await runTool(NODE, ['-e', 'process.exit(3)']);
     assert.equal(result.ok, false);

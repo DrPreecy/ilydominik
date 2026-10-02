@@ -55,7 +55,10 @@ async function importBackup(env: Env, file: string, opts: { replace?: boolean })
   const { bundle, events } = await readBackupFile(path.resolve(env.io.cwd, file));
   const root = projectRoot(env) ?? env.io.cwd;
   const { relation, common } = compare(await localEvents(root), events);
-  if (relation === 'same') return say(env, OUTCOME_TEXT[relation]);
+  if (relation === 'same') {
+    const restored = await restoreHandoffs(root, bundle.handoffs, true);
+    return say(env, OUTCOME_TEXT[relation], `${events.length} events, ${restored} missing session handoffs restored.`);
+  }
   if (relation === 'local-ahead' && !opts.replace) {
     return say(env, OUTCOME_TEXT[relation], 'To roll local memory back to this backup, run the import again with --replace.');
   }
@@ -72,7 +75,8 @@ async function importBackup(env: Env, file: string, opts: { replace?: boolean })
     await confirmDecision(env);
   }
   const outcome = await restoreLog(root, bundle.events, replacing);
-  const restored = outcome === 'same' || outcome === 'local-ahead' ? 0 : await restoreHandoffs(root, bundle.handoffs);
+  const restored =
+    outcome === 'local-ahead' ? 0 : await restoreHandoffs(root, bundle.handoffs, outcome === 'same');
   say(env, OUTCOME_TEXT[outcome], `${events.length} events, ${restored} session handoffs restored.`);
 }
 

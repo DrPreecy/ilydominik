@@ -230,23 +230,35 @@ export class EventLog {
 
   static async init(rootDir: string, title: string): Promise<EventLog> {
     const file = EventLog.filePath(rootDir);
-    await fs.mkdir(path.dirname(file), { recursive: true });
+    const dir = path.dirname(file);
+    await fs.mkdir(dir, { recursive: true });
+    const dirStat = await fs.lstat(dir);
+    if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) throw new Error(`${CWS_DIR} must be a real directory`);
+    const lockPath = path.join(dir, LOCK_FILE);
+    const nonce = await acquireLock(lockPath);
     try {
-      await fs.writeFile(file, '', { flag: 'wx' });
-    } catch (err) {
-      if (!isErrno(err, 'EEXIST')) throw err;
-      // An empty log is an init that crashed before its first event; take it over.
-      if ((await fs.stat(file)).size > 0) throw new DomainError('PROJECT_EXISTS', `project already exists in ${rootDir}`);
+      let full: string;
+      try {
+        const fileStat = await fs.lstat(file);
+        if (fileStat.isSymbolicLink() || !fileStat.isFile()) throw new Error(`${file} must be a regular file`);
+        full = await fs.readFile(file, 'utf8');
+      } catch (err) {
+        if (!isErrno(err, 'ENOENT')) throw err;
+        await fs.writeFile(file, '', { flag: 'wx' });
+        full = '';
+      }
+      const raw = committedText(full);
+      if (parseLines(raw).length > 0) {
+        throw new DomainError('PROJECT_EXISTS', `project already exists in ${rootDir}`);
+      }
+      if (full !== '') await fs.truncate(file, 0);
+      const log = new EventLog(rootDir, [], null);
+      const input = parseEventInput({ type: 'PROJECT_CREATED', actor: { kind: 'human' }, payload: { projectId: newId('p'), title } });
+      await log.appendLocked([input]);
+      return log;
+    } finally {
+      await releaseLock(lockPath, nonce);
     }
-    const log = new EventLog(rootDir, [], null);
-    try {
-      await log.append({ type: 'PROJECT_CREATED', actor: { kind: 'human' }, payload: { projectId: newId('p'), title } });
-    } catch (err) {
-      // Remove only a log that is still empty; a concurrent init may have created the project.
-      if ((await fs.stat(file).catch(() => null))?.size === 0) await fs.rm(file, { force: true });
-      throw err;
-    }
-    return log;
   }
 
   static async open(rootDir: string): Promise<EventLog> {

@@ -106,9 +106,15 @@ describe('backup: export and import', () => {
     await project(a);
     const file = await exportTo(a);
     await cli(io(b), 'import', file);
+    const session = (await EventLog.open(b)).state.sessions[0]!;
+    const handoff = path.join(b, '.cws', 'sessions', `${session.id}.md`);
+    const original = await fs.readFile(handoff, 'utf8');
+    await fs.rm(handoff);
     const same = io(b);
     await cli(same, 'import', file);
     assert.match(text(same), /up to date/);
+    assert.match(text(same), /1 missing session handoffs restored/);
+    assert.equal(await fs.readFile(handoff, 'utf8'), original);
     await cli(io(b), 'dump', 'local only');
     const newer = io(b);
     await cli(newer, 'import', file);

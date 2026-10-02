@@ -36,6 +36,9 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   delete process.env['CWS_TOOL_OPENSHELL'];
+  delete process.env['CWS_FAKE_GATEWAY_LOG'];
+  delete process.env['OPENSHELL_GATEWAY'];
+  delete process.env['OPENSHELL_GATEWAY_ENDPOINT'];
   await fs.rm(dir, { recursive: true, force: true });
 });
 
@@ -374,16 +377,17 @@ describe('cws sandbox: policy', () => {
     assert.match(text(io), /differs/);
   });
 
-  it('explains a tampered rules file instead of crashing', async () => {
+  it('does not treat an edited rules cache as approved access', async () => {
     await initProject();
     await fs.mkdir(path.dirname(rulesFile()), { recursive: true });
     await fs.writeFile(rulesFile(), JSON.stringify([{ host: 5 }]));
-    for (const args of [['sandbox', 'status'], ['sandbox', 'policy', '--show']]) {
-      const io = human();
-      await cli(io, ...args);
-      assert.match(text(io) + errText(io), /rules\.json.*host/, args.join(' '));
-      assert.doesNotMatch(text(io) + errText(io), /TypeError|Cannot read/, args.join(' '));
-    }
+    const status = human();
+    assert.equal(await cli(status, 'sandbox', 'status'), EXIT.ERROR);
+    assert.match(errText(status), /rules\.json.*host/);
+    assert.doesNotMatch(text(status) + errText(status), /TypeError|Cannot read/);
+    const shown = human();
+    assert.equal(await cli(shown, 'sandbox', 'policy', '--show'), EXIT.ERROR);
+    assert.match(errText(shown), /rules\.json.*host/);
   });
 });
 
@@ -408,6 +412,7 @@ async function useStub(mode = 'local'): Promise<void> {
     "import { appendFileSync } from 'node:fs';\n" +
       "const args = process.argv.slice(2);\n" +
       "if (process.env.CWS_FAKE_LOG) appendFileSync(process.env.CWS_FAKE_LOG, args.join(' ') + '\\n');\n" +
+      "if (process.env.CWS_FAKE_GATEWAY_LOG) appendFileSync(process.env.CWS_FAKE_GATEWAY_LOG, JSON.stringify({ OPENSHELL_GATEWAY: process.env.OPENSHELL_GATEWAY, OPENSHELL_GATEWAY_ENDPOINT: process.env.OPENSHELL_GATEWAY_ENDPOINT }) + '\\n');\n" +
       "process.stdout.write(args.join(' ') + '\\n');\n" +
       "process.stderr.write('error: no gateway\\n');\n" +
       "const execExit = args[1] === 'exec' ? process.env.CWS_FAKE_EXEC_EXIT : undefined;\n" +
@@ -654,18 +659,29 @@ describe('cws sandbox: with openshell', () => {
     assert.doesNotMatch(written, /everything/);
   });
 
-  it('refuses to start from a tampered rules file', async () => {
+  it('rejects valid rules-cache edits that widen egress and allows an edit to narrow it', async () => {
     await initProject();
     await stubOpenshell();
     await fs.mkdir(path.dirname(rulesFile()), { recursive: true });
-    await fs.writeFile(rulesFile(), JSON.stringify([{ host: 'a.com', port: 443, access: 'full\n    tls: skip' }]));
-    for (const args of [['sandbox', 'run', '--', 'ls'], ['sandbox', 'up']]) {
-      const io = human();
-      assert.equal(await cli(io, ...args), EXIT.ERROR, args.join(' '));
-      assert.match(errText(io), /rules\.json.*access/, args.join(' '));
-      assert.doesNotMatch(text(io), /sandbox create/, args.join(' '));
-    }
-    assert.doesNotMatch(await fs.readFile(policyFile(), 'utf8').catch(() => ''), /tls: skip/);
+    assert.equal(await cli(human(['K7Q']), 'sandbox', 'policy', '--rule', 'api.github.com:443'), EXIT.OK);
+    await fs.writeFile(
+      rulesFile(),
+      JSON.stringify([{ host: 'api.github.com', port: 443, access: 'full' }, { host: 'evil.example', port: 443 }]),
+    );
+    const widened = human();
+    assert.equal(await cli(widened, 'sandbox', 'run', '--', 'ls'), EXIT.ERROR);
+    assert.match(errText(widened), /without an exact human approval/);
+    assert.doesNotMatch(text(widened), /sandbox create/);
+
+    await fs.writeFile(rulesFile(), '[]\n');
+    assert.equal(await cli(human(), 'sandbox', 'run', '--', 'ls'), EXIT.OK);
+    const policy = await fs.readFile(policyFile(), 'utf8');
+    assert.match(policy, /# No network access was approved/);
+    assert.doesNotMatch(policy, /api\.github\.com/);
+    assert.doesNotMatch(policy, /evil\.example/);
+    assert.doesNotMatch(policy, /access: full/);
+    assert.deepEqual(JSON.parse(await fs.readFile(rulesFile(), 'utf8')), []);
+    assert.equal((await EventLog.open(dir)).state.decisions.length, 1);
   });
 
   it('does not start a sandbox when the sandbox mode is off', async () => {
@@ -717,6 +733,28 @@ describe('cws sandbox: with openshell', () => {
     assert.match(made[1]!, /^sandbox exec -n cws-\S+ --workdir \/sandbox --no-tty -- node --version$/);
     assert.match(made[2]!, /^sandbox delete cws-\S+$/);
     assert.match(text(io), /sandbox run: node --version ok/);
+  });
+
+  it('passes the configured gateway name or endpoint to every OpenShell call', async () => {
+    await initProject();
+    await stubOpenshell();
+    const log = path.join(dir, 'openshell-gateways.log');
+    process.env['CWS_FAKE_GATEWAY_LOG'] = log;
+    process.env['OPENSHELL_GATEWAY'] = 'active-gateway';
+    for (const [gateway, expected] of [
+      ['staging', { OPENSHELL_GATEWAY: 'staging', OPENSHELL_GATEWAY_ENDPOINT: undefined }],
+      ['https://gateway.example.test', { OPENSHELL_GATEWAY: undefined, OPENSHELL_GATEWAY_ENDPOINT: 'https://gateway.example.test' }],
+    ] as const) {
+      await fs.writeFile(path.join(dir, '.cws', 'integrations.json'), JSON.stringify({ version: 1, sandbox: { mode: 'remote', gateway } }));
+      await calls(async () => assert.equal(await cli(human(), 'sandbox', 'run', '--', 'ls'), EXIT.OK));
+      const observed = (await fs.readFile(log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+      assert.equal(observed.length, 3);
+      assert.ok(observed.every((row) =>
+        row['OPENSHELL_GATEWAY'] === expected.OPENSHELL_GATEWAY
+        && row['OPENSHELL_GATEWAY_ENDPOINT'] === expected.OPENSHELL_GATEWAY_ENDPOINT,
+      ));
+      await fs.writeFile(log, '');
+    }
   });
 
   it('keeps the sandbox when asked', async () => {

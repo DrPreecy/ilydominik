@@ -152,32 +152,45 @@ async function realDirectory(dir: string, rootDir: string): Promise<void> {
   }
 }
 
-async function writeAtomic(file: string, data: string | Buffer): Promise<void> {
-  try {
-    if (!(await fs.lstat(file)).isFile()) throw new Error(`${file} must be a regular file`);
-  } catch (err) {
-    if (!isErrno(err, 'ENOENT')) throw err;
+async function writeAtomic(file: string, data: string | Buffer, replace = true): Promise<boolean> {
+  if (replace) {
+    try {
+      if (!(await fs.lstat(file)).isFile()) throw new Error(`${file} must be a regular file`);
+    } catch (err) {
+      if (!isErrno(err, 'ENOENT')) throw err;
+    }
   }
   const temporary = `${file}.${randomBytes(6).toString('hex')}.tmp`;
   try {
     await fs.writeFile(temporary, data, { flag: 'wx' });
+    if (!replace) {
+      try {
+        await fs.link(temporary, file);
+        return true;
+      } catch (err) {
+        if (isErrno(err, 'EEXIST')) return false;
+        throw err;
+      }
+    }
     await fs.rename(temporary, file);
+    return true;
   } finally {
     await fs.rm(temporary, { force: true });
   }
 }
 
 /** Write the backup's session handoffs into `.cws/sessions`; returns how many were written. */
-export async function restoreHandoffs(rootDir: string, handoffs: Record<string, string>): Promise<number> {
+export async function restoreHandoffs(rootDir: string, handoffs: Record<string, string>, onlyMissing = false): Promise<number> {
   const entries = Object.entries(handoffs);
   if (entries.length === 0) return 0;
   const dir = path.join(rootDir, CWS_DIR, SESSIONS_DIR);
   await realDirectory(dir, rootDir);
+  let restored = 0;
   for (const [sessionId, text] of entries) {
     assertSessionId(sessionId);
-    await writeAtomic(path.join(dir, `${sessionId}.md`), text);
+    if (await writeAtomic(path.join(dir, `${sessionId}.md`), text, !onlyMissing)) restored += 1;
   }
-  return entries.length;
+  return restored;
 }
 
 export function autoBackupEnabled(env: NodeJS.ProcessEnv = process.env): boolean {

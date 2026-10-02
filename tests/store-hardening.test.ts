@@ -114,6 +114,30 @@ describe('crash recovery', () => {
     assert.equal((await EventLog.open(dir)).state.title, 'recovered');
   });
 
+  it('init recovers a torn first event instead of reporting a project that cannot be opened', async () => {
+    await fs.mkdir(path.dirname(logFile()), { recursive: true });
+    await fs.writeFile(logFile(), '{"v":1,"seq":0,"id":"ev_partial","at":"2026-');
+    const log = await EventLog.init(dir, 'recovered');
+    assert.equal(log.state.title, 'recovered');
+    assert.equal((await EventLog.open(dir)).events.length, 1);
+    assert.equal((await EventLog.open(dir)).integrity.ok, true);
+  });
+
+  it('only one concurrent init creates a project', async () => {
+    const results = await Promise.allSettled([EventLog.init(dir, 'first'), EventLog.init(dir, 'second')]);
+    assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+    assert.equal(results.filter((result) => result.status === 'rejected').length, 1);
+    assert.equal((await EventLog.open(dir)).events.length, 1);
+  });
+
+  it('init refuses a linked project metadata directory', { skip: process.platform === 'win32' }, async () => {
+    const outside = path.join(dir, 'outside');
+    await fs.mkdir(outside);
+    await fs.symlink(outside, path.join(dir, CWS_DIR), 'dir');
+    await assert.rejects(EventLog.init(dir, 'blocked'), /must be a real directory/);
+    assert.equal(await fs.readdir(outside).then((names) => names.length), 0);
+  });
+
   it('treats a recovery marker that is being deleted (EPERM on Windows) as gone and retries', { skip: process.platform !== 'win32' }, async (t) => {
     await EventLog.init(dir, 'p');
     const lockPath = path.join(dir, CWS_DIR, 'lock');

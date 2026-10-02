@@ -10,7 +10,7 @@
  * because quoting there cannot be made safe. On Windows use WSL (see `./wsl.ts`).
  */
 
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
@@ -132,7 +132,7 @@ function unusableReason(command: string, args: readonly string[], platform: Node
 }
 
 /** Kills `child` and everything it started: `taskkill /T` on Windows, the process group elsewhere. */
-function killTree(child: ChildProcessWithoutNullStreams): void {
+function killTree(child: ChildProcess): void {
   const pid = child.pid;
   if (pid === undefined) return;
   if (process.platform === 'win32') {
@@ -156,6 +156,7 @@ function killTree(child: ChildProcessWithoutNullStreams): void {
 export function runTool(command: string, args: readonly string[] = [], opts: RunOptions = {}): Promise<RunResult> {
   const started = Date.now();
   const maxBytes = opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+  const sendStdin = opts.stdin !== undefined && opts.stdin !== '';
   const fail = (stderr: string): RunResult => ({
     command,
     args: [...args],
@@ -173,7 +174,7 @@ export function runTool(command: string, args: readonly string[] = [], opts: Run
   if (reason !== null) return Promise.resolve(fail(reason));
 
   return new Promise<RunResult>((resolve) => {
-    let child: ChildProcessWithoutNullStreams;
+    let child: ChildProcess;
     try {
       child = spawn(command, [...args], {
         ...(opts.cwd === undefined ? {} : { cwd: opts.cwd }),
@@ -182,7 +183,7 @@ export function runTool(command: string, args: readonly string[] = [], opts: Run
         windowsHide: true,
         // its own process group on POSIX, so a timeout reaches grandchildren too
         detached: process.platform !== 'win32',
-        stdio: ['pipe', 'pipe', 'pipe'],
+        stdio: [sendStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       });
     } catch (error: unknown) {
       resolve(fail(error instanceof Error ? error.message : String(error)));
@@ -207,10 +208,10 @@ export function runTool(command: string, args: readonly string[] = [], opts: Run
       return size + slice.length;
     };
 
-    child.stdout.on('data', (chunk: Buffer) => {
+    child.stdout?.on('data', (chunk: Buffer) => {
       outBytes = capture(out, outBytes, chunk);
     });
-    child.stderr.on('data', (chunk: Buffer) => {
+    child.stderr?.on('data', (chunk: Buffer) => {
       errBytes = capture(err, errBytes, chunk);
     });
 
@@ -239,7 +240,7 @@ export function runTool(command: string, args: readonly string[] = [], opts: Run
       });
     });
 
-    child.stdin.end(opts.stdin ?? '');
+    if (sendStdin) child.stdin?.end(opts.stdin);
   });
 }
 

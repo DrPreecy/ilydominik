@@ -10,7 +10,7 @@ import { findExecutable, resolveToolCommand, runTool, type RunResult, type ToolC
 import { assertSandboxName, connectArgs, createArgs, deleteArgs, execArgs, logsArgs, projectUpload, ruleApproveArgs, ruleGetArgs, ruleRejectArgs } from '../../integrations/openshell/args.ts';
 import { parseRules, parseRuleSpec, policyFor, ruleName, type SandboxNetworkRule } from '../../integrations/openshell/policy.ts';
 import { windowsToWslPath, wslArgs } from '../../integrations/wsl.ts';
-import { CWS_DIR } from '../../store/event-log.ts';
+import { CWS_DIR, EventLog } from '../../store/event-log.ts';
 import { EXIT } from '../io.ts';
 import { actorOf, CliExit, confirmDecision, fail, openLog, projectRoot, requireClaim, requireHuman, say, warn, type ActorOpts, type Env } from '../human.ts';
 
@@ -30,6 +30,7 @@ export interface SandboxContext {
 interface Launch {
   tool: ToolCommand;
   mode: SandboxMode;
+  gateway?: string;
 }
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -71,34 +72,54 @@ export async function sandboxContext(env: Env, requested?: string): Promise<Sand
   };
 }
 
-/** rules.json, strictly: it lives in the project, so anything in it may have been edited. */
+const RULES_AUDIT_MARKER = '\nCWS sandbox rules: ';
+
+/** rules.json may narrow grants, but it may not introduce or broaden one. */
 async function readRules(file: string): Promise<SandboxNetworkRule[]> {
-  let raw: string;
+  let stat;
   try {
-    raw = await fs.readFile(file, 'utf8');
+    stat = await fs.lstat(file);
   } catch (error: unknown) {
     if (error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw error;
   }
+  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`${file} must be a regular file`);
   let json: unknown;
   try {
-    json = JSON.parse(raw);
-  } catch {
-    throw new Error('not valid JSON');
+    json = JSON.parse(await fs.readFile(file, 'utf8'));
+  } catch (error: unknown) {
+    if (error instanceof SyntaxError) throw new Error('rules.json is not valid JSON');
+    throw error;
   }
   return parseRules(json);
 }
 
-function rulesProblem(ctx: SandboxContext, error: unknown): string {
-  return `${path.relative(ctx.root, ctx.rulesFile)} cannot be used (${messageOf(error)})`;
-}
-
-/** The approved rules, or a clean stop when rules.json no longer holds safe rules. */
+/** Only rules attached to a human decision in the integrity-checked log may grant egress. */
 async function approvedRules(env: Env, ctx: SandboxContext): Promise<SandboxNetworkRule[]> {
   try {
-    return await readRules(ctx.rulesFile);
+    const log = await EventLog.open(ctx.root);
+    const integrity = log.integrity;
+    if (!integrity.ok) throw new Error(`event log hash chain is broken at sequence ${integrity.brokenAtSeq}`);
+    const approved: SandboxNetworkRule[] = [];
+    for (const event of log.events) {
+      if (event.type !== 'DECISION_RECORDED' || event.actor.kind !== 'human' || event.payload.title !== 'Sandbox network access') continue;
+      const marker = event.payload.rationale.lastIndexOf(RULES_AUDIT_MARKER);
+      if (marker === -1) continue;
+      const rules = parseRules(JSON.parse(event.payload.rationale.slice(marker + RULES_AUDIT_MARKER.length)));
+      for (const rule of rules) {
+        if (!approved.some((existing) => ruleName(existing) === ruleName(rule))) approved.push(rule);
+      }
+    }
+    const active = await readRules(ctx.rulesFile).catch((error: unknown) => {
+      throw new Error(`${path.relative(ctx.root, ctx.rulesFile)} cannot be used (${messageOf(error)})`);
+    });
+    const unauthorized = active.find((rule) => !approved.some((grant) => ruleName(grant) === ruleName(rule)));
+    if (unauthorized !== undefined) {
+      throw new Error(`${path.relative(ctx.root, ctx.rulesFile)} contains a rule without an exact human approval: ${ruleLabel(unauthorized)}`);
+    }
+    return active;
   } catch (error: unknown) {
-    fail(env, `error: ${rulesProblem(ctx, error)}. Fix or delete it, then add rules again with \`cws sandbox policy --rule\`.`);
+    fail(env, `error: sandbox rules or approvals cannot be used (${messageOf(error)}).`);
   }
 }
 
@@ -153,11 +174,25 @@ async function openshellFor(env: Env, ctx: SandboxContext, creates = false): Pro
         : `The path in ${TOOL_ENV.openshell} does not exist: ${setup.configured}`;
     fail(env, `error: \`openshell\` was not found. ${hint}`);
   }
-  return { mode: setup.mode, tool: setup.openshell };
+  return {
+    mode: setup.mode,
+    tool: setup.openshell,
+    ...(setup.mode === 'remote' && setup.loaded.config.sandbox.gateway !== undefined
+      ? { gateway: setup.loaded.config.sandbox.gateway }
+      : {}),
+  };
 }
 
 function runOpenshell(launch: Launch, ctx: SandboxContext, args: readonly string[], timeoutMs: number): Promise<RunResult> {
-  return runTool(launch.tool.file, [...launch.tool.prefix, ...args], { cwd: ctx.root, timeoutMs });
+  let env = process.env;
+  if (launch.gateway !== undefined) {
+    env = { ...process.env };
+    delete env.OPENSHELL_GATEWAY;
+    delete env.OPENSHELL_GATEWAY_ENDPOINT;
+    if (/^https?:\/\//i.test(launch.gateway)) env.OPENSHELL_GATEWAY_ENDPOINT = launch.gateway;
+    else env.OPENSHELL_GATEWAY = launch.gateway;
+  }
+  return runTool(launch.tool.file, [...launch.tool.prefix, ...args], { cwd: ctx.root, timeoutMs, env });
 }
 
 /** A host path as openshell sees it: a `/mnt/...` path in wsl mode, unchanged otherwise. */
@@ -189,6 +224,10 @@ async function syncPolicy(env: Env, ctx: SandboxContext): Promise<SandboxNetwork
   const rules = await approvedRules(env, ctx);
   const text = policyFor(rules).text;
   const existing = await fs.readFile(ctx.policyFile, 'utf8').catch(() => null);
+  const storedRules = `${JSON.stringify(rules, null, 2)}\n`;
+  if ((await fs.readFile(ctx.rulesFile, 'utf8').catch(() => null)) !== storedRules) {
+    await writeFileAtomic(ctx.rulesFile, storedRules);
+  }
   if (existing === text) return rules;
   await writeFileAtomic(ctx.policyFile, text);
   const file = path.relative(ctx.root, ctx.policyFile);
@@ -235,7 +274,7 @@ export function accessDecisionPayload(
     selected: added.map((rule) => rule.host).join(', '),
     rationale:
       `Approved ${added.length} sandbox network rule(s), ${already} from before. ` +
-      'Every destination outside these rules stays denied.',
+      `Every destination outside these rules stays denied.${RULES_AUDIT_MARKER}${JSON.stringify(added)}`,
     kind: 'NORMAL',
   };
 }
@@ -279,10 +318,8 @@ export function runEvidencePayload(
 async function status(env: Env, opts: { name?: string }): Promise<void> {
   const ctx = await sandboxContext(env, opts.name);
   const setup = await sandboxSetup(ctx);
-  const rules = await readRules(ctx.rulesFile).then(
-    (list) => `${list.length} approved network rule${list.length === 1 ? '' : 's'}`,
-    (error: unknown) => rulesProblem(ctx, error),
-  );
+  const count = (await approvedRules(env, ctx)).length;
+  const rules = `${count} approved network rule${count === 1 ? '' : 's'}`;
   const openshell = setup.openshell === null ? null : [setup.openshell.file, ...setup.openshell.prefix].join(' ');
   say(
     env,
