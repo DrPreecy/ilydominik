@@ -2,12 +2,11 @@
  * The OpenShell command lines CWS builds. Kept apart from running them so every
  * argument list can be checked in a test without a live gateway.
  *
- * Verified against the OpenShell CLI surface:
- *   openshell sandbox create --name N --policy FILE [--from IMAGE] [--provider P]
- *                              [--upload SRC:DST] [--approval-mode auto|manual]
- *                              [--no-keep] [-- command...]
+ * Checked against the OpenShell CLI source (crates/openshell-cli/src/main.rs):
+ *   openshell sandbox create --detach --name N --policy FILE [--from IMAGE] [--provider P]
+ *                              [--upload LOCAL[:DEST]] [--approval-mode auto|manual]
+ *   openshell sandbox exec -n N [--workdir DIR] --no-tty -- command...
  *   openshell sandbox connect N
- *   openshell sandbox ssh-config N
  *   openshell sandbox delete N
  *   openshell sandbox list
  *   openshell logs N --tail --source sandbox
@@ -15,10 +14,10 @@
  *   openshell rule approve N --chunk-id ID
  *   openshell rule reject N --chunk-id ID --reason "why"
  *
- * A one-off command runs through `create ... -- command`, which is the documented way.
- * Running a second command inside a long-lived sandbox goes over SSH
- * (`openshell sandbox ssh-config N` + `ssh -F`), which needs an ssh client, so CWS
- * keeps that path for later and re-creates the sandbox for each `sandbox run`.
+ * `create` refuses `--upload` together with a command (`conflicts_with = "command"`) and,
+ * without a command, would attach an interactive shell. So a run is three calls, as in
+ * OpenShell's own end-to-end harness: `create --detach` with the upload, `exec` the command
+ * (its exit code is the command's), then `delete` unless the sandbox is kept.
  */
 
 export const SANDBOX_NAME_MAX = 19;
@@ -27,15 +26,15 @@ export interface SandboxCreateOptions {
   name: string;
   policyFile: string;
   providers?: readonly string[];
-  /** `src:/sandbox/dest` pairs; `--upload` takes one value per flag */
+  /** `local:/sandbox/dest` pairs; `--upload` takes one value per flag */
   uploads?: readonly string[];
   /** manual keeps every network rule for the human; auto lets OpenShell approve the safe ones */
   approvalMode?: 'auto' | 'manual';
-  keep?: boolean;
-  /** optional command to run inside the sandbox right after it is created */
-  command?: readonly string[];
   image?: string;
 }
+
+/** Where the project lands inside the sandbox, and where commands run. */
+export const SANDBOX_WORKDIR = '/sandbox';
 
 /** Sandbox names are short and name-safe; the gateway rejects anything else. */
 export function assertSandboxName(name: string): void {
@@ -48,14 +47,19 @@ export function assertSandboxName(name: string): void {
 
 export function createArgs(opts: SandboxCreateOptions): string[] {
   assertSandboxName(opts.name);
-  const args = ['sandbox', 'create', '--name', opts.name, '--policy', opts.policyFile];
+  const args = ['sandbox', 'create', '--detach', '--name', opts.name, '--policy', opts.policyFile];
   if (opts.image !== undefined) args.push('--from', opts.image);
   for (const provider of opts.providers ?? []) args.push('--provider', provider);
   for (const upload of opts.uploads ?? []) args.push('--upload', upload);
   args.push('--approval-mode', opts.approvalMode ?? 'manual');
-  if (opts.keep !== true) args.push('--no-keep');
-  if (opts.command !== undefined && opts.command.length > 0) args.push('--', ...opts.command);
   return args;
+}
+
+/** Run one command in an existing sandbox; `--` keeps its arguments away from openshell's own flags. */
+export function execArgs(name: string, command: readonly string[], workdir: string = SANDBOX_WORKDIR): string[] {
+  assertSandboxName(name);
+  if (command.length === 0) throw new Error('no command to run');
+  return ['sandbox', 'exec', '-n', name, '--workdir', workdir, '--no-tty', '--', ...command];
 }
 
 export function connectArgs(name: string): string[] {
@@ -101,11 +105,11 @@ export function ruleRejectArgs(name: string, chunkId: string, reason?: string): 
 }
 
 /**
- * The upload spec for mounting the project into the sandbox at `/sandbox`. A colon in the
- * host path (`E:\p`) would make `SRC:DST` ambiguous, so it is refused; callers on native
- * Windows pass `.` with the project as the working directory instead.
+ * The upload spec for the project. OpenShell splits `LOCAL:DEST` at the first colon, so a
+ * Windows path (`E:\p`) cannot be the local side; callers pass `.` and run openshell with the
+ * project as its working directory (wsl.exe carries that directory over as `/mnt/...`).
  */
-export function projectUpload(hostPath: string): string {
+export function projectUpload(hostPath = '.'): string {
   if (hostPath.includes(':')) throw new Error(`the upload path may not contain a colon, which separates it from the sandbox path: ${hostPath}`);
-  return `${hostPath}:/sandbox`;
+  return `${hostPath}:${SANDBOX_WORKDIR}`;
 }

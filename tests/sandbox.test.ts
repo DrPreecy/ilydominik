@@ -12,6 +12,7 @@ import {
   assertSandboxName,
   connectArgs,
   createArgs,
+  execArgs,
   deleteArgs,
   listArgs,
   logsArgs,
@@ -158,7 +159,7 @@ describe('sandbox: policy generation', () => {
     assert.match(String(validateRule({ host: 'example.com', port: 0 })), /not a port/);
     assert.match(String(validateRule({ host: 'example.com', port: 443, method: 'PUT' })), /method needs a path/);
     assert.match(String(validateRule({ host: 'example.com', port: 443, path: '/x' })), /path needs a method/);
-    assert.match(String(validateRule({ host: 'example.com', port: 443, method: 'put', path: '/x' })), /upper case/);
+    assert.match(String(validateRule({ host: 'example.com', port: 443, method: 'put', path: '/x' })), /method must be one of/);
     assert.match(String(validateRule({ host: 'example.com', port: 443, method: 'GET', path: '/x?y=1' })), /query strings/);
     assert.match(String(validateRule({ host: 'example.com', port: 443, binary: 'gh' })), /absolute path/);
     assert.equal(validateRule({ host: 'api.github.com', port: 443 }), null);
@@ -205,16 +206,18 @@ describe('sandbox: openshell arguments', () => {
     assert.throws(() => assertSandboxName('x'.repeat(SANDBOX_NAME_MAX + 1)), /lowercase/);
   });
 
-  it('builds create arguments, including the one-off command', () => {
+  it('creates detached, never with a command (OpenShell refuses --upload together with one)', () => {
     assert.deepEqual(createArgs({ name: 'sb', policyFile: '/p/policy.yaml' }), [
-      'sandbox', 'create', '--name', 'sb', '--policy', '/p/policy.yaml', '--approval-mode', 'manual', '--no-keep',
+      'sandbox', 'create', '--detach', '--name', 'sb', '--policy', '/p/policy.yaml', '--approval-mode', 'manual',
     ]);
-    assert.deepEqual(
-      createArgs({ name: 'sb', policyFile: '/p/policy.yaml', keep: true, providers: ['github'], uploads: ['/w:/sandbox'], command: ['ls', '-la'] }),
-      ['sandbox', 'create', '--name', 'sb', '--policy', '/p/policy.yaml', '--provider', 'github', '--upload', '/w:/sandbox', '--approval-mode', 'manual', '--', 'ls', '-la'],
-    );
-    assert.deepEqual(createArgs({ name: 'sb', policyFile: '/p', image: 'ubuntu:24.04' }).slice(0, 6), [
-      'sandbox', 'create', '--name', 'sb', '--policy', '/p',
+    const full = createArgs({ name: 'sb', policyFile: '/p/policy.yaml', providers: ['github'], uploads: ['.:/sandbox'] });
+    assert.deepEqual(full, [
+      'sandbox', 'create', '--detach', '--name', 'sb', '--policy', '/p/policy.yaml', '--provider', 'github',
+      '--upload', '.:/sandbox', '--approval-mode', 'manual',
+    ]);
+    assert.equal(full.includes('--'), false);
+    assert.deepEqual(createArgs({ name: 'sb', policyFile: '/p', image: 'ubuntu:24.04' }).slice(0, 7), [
+      'sandbox', 'create', '--detach', '--name', 'sb', '--policy', '/p',
     ]);
     const withImage = createArgs({ name: 'sb', policyFile: '/p', image: 'ubuntu:24.04' });
     assert.equal(withImage[withImage.indexOf('--from') + 1], 'ubuntu:24.04');
@@ -236,15 +239,23 @@ describe('sandbox: openshell arguments', () => {
     assert.throws(() => ruleApproveArgs('sb', '  '), /no chunk id/);
   });
 
+  it('runs a command with exec, keeping its arguments after --', () => {
+    assert.deepEqual(execArgs('sb', ['npm', '--version']), [
+      'sandbox', 'exec', '-n', 'sb', '--workdir', '/sandbox', '--no-tty', '--', 'npm', '--version',
+    ]);
+    assert.throws(() => execArgs('sb', []), /no command/);
+    assert.throws(() => execArgs('BAD', ['ls']), /lowercase/);
+  });
+
   it('mounts the project at /sandbox and refuses a host path with a colon', () => {
+    assert.equal(projectUpload(), '.:/sandbox');
     assert.equal(projectUpload('/w/proj'), '/w/proj:/sandbox');
+    // OpenShell splits LOCAL:DEST at the first colon, so `E:\dev:/sandbox` would upload "E".
     assert.throws(() => projectUpload('E:\\dev\\proj'), /colon/);
   });
 
   it('translates host paths for the sandbox mode', () => {
-    assert.equal(uploadSpec('wsl', 'E:\\dev\\proj', 'win32'), '/mnt/e/dev/proj:/sandbox');
-    assert.equal(uploadSpec('local', 'E:\\dev\\proj', 'win32'), '.:/sandbox');
-    assert.equal(uploadSpec('local', '/w/proj', 'linux'), '/w/proj:/sandbox');
+    assert.equal(uploadSpec(), '.:/sandbox');
     assert.equal(hostPathFor('wsl', 'E:\\p\\.cws\\sandbox\\policy.yaml'), '/mnt/e/p/.cws/sandbox/policy.yaml');
     assert.equal(hostPathFor('local', 'E:\\p\\policy.yaml'), 'E:\\p\\policy.yaml');
     assert.throws(() => hostPathFor('wsl', 'relative\\policy.yaml'), /WSL/);
@@ -394,9 +405,13 @@ async function useStub(mode = 'local'): Promise<void> {
   const file = path.join(bin, 'openshell.mjs');
   await fs.writeFile(
     file,
-    "process.stdout.write(process.argv.slice(2).join(' ') + '\\n');\n" +
+    "import { appendFileSync } from 'node:fs';\n" +
+      "const args = process.argv.slice(2);\n" +
+      "if (process.env.CWS_FAKE_LOG) appendFileSync(process.env.CWS_FAKE_LOG, args.join(' ') + '\\n');\n" +
+      "process.stdout.write(args.join(' ') + '\\n');\n" +
       "process.stderr.write('error: no gateway\\n');\n" +
-      "process.exit(Number(process.env.CWS_FAKE_EXIT ?? 0));\n",
+      "const execExit = args[1] === 'exec' ? process.env.CWS_FAKE_EXEC_EXIT : undefined;\n" +
+      "process.exit(Number(execExit ?? process.env.CWS_FAKE_EXIT ?? 0));\n",
   );
   process.env['CWS_TOOL_OPENSHELL'] = file;
   await fs.writeFile(path.join(dir, '.cws', 'integrations.json'), JSON.stringify({ version: 1, sandbox: { mode } }));
@@ -552,17 +567,34 @@ describe('cws sandbox: openshell present but failing', () => {
     await useNodeAsOpenshell();
 
     const io = human();
-    // node is handed `sandbox create ...`: it cannot find that file, so the run fails.
+    // node is handed `sandbox create ...`: it cannot find that file, so no sandbox exists.
     const code = await cli(io, 'sandbox', 'run', '--agent', 'copilot', '--claim', claimId, '--', 'node', '--version');
     assert.notEqual(code, EXIT.OK);
-    assert.match(errText(io), /sandbox run: node --version failed \(exit /);
+    assert.match(errText(io), /sandbox cws-\S+ create failed \(exit /);
 
+    // The command never ran, so there is nothing to attach as evidence.
+    const attached = (await EventLog.open(dir)).state.claims.find((c) => c.id === claimId)?.evidence ?? [];
+    assert.equal(attached.length, 0);
+    assert.match(await fs.readFile(policyFile(), 'utf8'), /# No network access was approved/);
+  });
+
+  it('attaches a command that ran as evidence, whatever its exit code', async () => {
+    await initProject();
+    const claimId = await claim();
+    await useStub();
+    process.env['CWS_FAKE_EXEC_EXIT'] = '1';
+    try {
+      const code = await cli(human(), 'sandbox', 'run', '--agent', 'copilot', '--claim', claimId, '--', 'node', '--version');
+      assert.equal(code, 1);
+    } finally {
+      delete process.env['CWS_FAKE_EXEC_EXIT'];
+    }
     const attached = (await EventLog.open(dir)).state.claims.find((c) => c.id === claimId)?.evidence ?? [];
     assert.equal(attached.length, 1);
-    assert.match(attached[0]?.text ?? '', /`node --version`/);
+    assert.match(attached[0]?.text ?? '', /`node --version` exited 1/);
     assert.match(attached[0]?.text ?? '', /\.cws[\\/]sandbox[\\/]policy\.yaml/);
     assert.equal(attached[0]?.actor.kind, 'ai');
-    assert.match(await fs.readFile(policyFile(), 'utf8'), /# No network access was approved/);
+    assert.equal(attached[0]?.source, 'openshell sandbox exec');
   });
 
   it('writes the policy before the first run', async () => {
@@ -662,38 +694,77 @@ describe('cws sandbox: with openshell', () => {
     assert.match(text(io), /--provider github/);
   });
 
-  it('runs a command in a fresh sandbox and reports it', async () => {
+  /** The openshell calls a CLI run made, one argument string per call. */
+  async function calls(run: () => Promise<unknown>): Promise<string[]> {
+    const log = path.join(dir, 'openshell-calls.log');
+    process.env['CWS_FAKE_LOG'] = log;
+    try {
+      await run();
+    } finally {
+      delete process.env['CWS_FAKE_LOG'];
+    }
+    return (await fs.readFile(log, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean);
+  }
+
+  it('runs a command as create --detach, exec, delete — the sequence OpenShell supports', async () => {
     await initProject();
     await stubOpenshell();
 
     const io = human();
-    assert.equal(await cli(io, 'sandbox', 'run', '--', 'node', '--version'), EXIT.OK);
-    const printed = text(io);
-    assert.match(printed, /--approval-mode manual/);
-    assert.match(printed, /--no-keep/);
-    assert.match(printed, /-- node --version/);
+    const made = await calls(async () => assert.equal(await cli(io, 'sandbox', 'run', '--', 'node', '--version'), EXIT.OK));
+    assert.equal(made.length, 3);
+    assert.match(made[0]!, /^sandbox create --detach --name cws-\S+ --policy \S+ --upload \.:\/sandbox --approval-mode manual$/);
+    assert.match(made[1]!, /^sandbox exec -n cws-\S+ --workdir \/sandbox --no-tty -- node --version$/);
+    assert.match(made[2]!, /^sandbox delete cws-\S+$/);
+    assert.match(text(io), /sandbox run: node --version ok/);
   });
 
   it('keeps the sandbox when asked', async () => {
     await initProject();
     await stubOpenshell();
-    const io = human();
-    assert.equal(await cli(io, 'sandbox', 'run', '--keep', '--', 'ls'), EXIT.OK);
-    assert.doesNotMatch(text(io), /--no-keep/);
+    const made = await calls(async () => assert.equal(await cli(human(), 'sandbox', 'run', '--keep', '--', 'ls'), EXIT.OK));
+    assert.deepEqual(made.map((call) => call.split(' ')[1]), ['create', 'exec']);
   });
 
-  it('writes the policy before the first run and passes the exit code through', async () => {
+  it('passes the command exit code through and still deletes the sandbox', async () => {
     await initProject();
     await stubOpenshell();
-    process.env['CWS_FAKE_EXIT'] = '3';
+    process.env['CWS_FAKE_EXEC_EXIT'] = '3';
     try {
       const io = human();
-      assert.equal(await cli(io, 'sandbox', 'run', '--', 'false'), 3);
-      assert.match(errText(io), /failed \(exit 3/);
+      const made = await calls(async () => assert.equal(await cli(io, 'sandbox', 'run', '--', 'false'), 3));
+      assert.match(errText(io), /sandbox run: false failed \(exit 3/);
+      assert.match(made.at(-1)!, /^sandbox delete /);
+    } finally {
+      delete process.env['CWS_FAKE_EXEC_EXIT'];
+    }
+    assert.match(await fs.readFile(policyFile(), 'utf8'), /# No network access was approved/);
+  });
+
+  it('stops before exec when the sandbox cannot be created', async () => {
+    await initProject();
+    await stubOpenshell();
+    process.env['CWS_FAKE_EXIT'] = '4';
+    try {
+      const io = human();
+      const made = await calls(async () => assert.equal(await cli(io, 'sandbox', 'run', '--', 'ls'), 4));
+      assert.equal(made.length, 1);
+      assert.match(errText(io), /create failed \(exit 4/);
     } finally {
       delete process.env['CWS_FAKE_EXIT'];
     }
-    assert.match(await fs.readFile(policyFile(), 'utf8'), /# No network access was approved/);
+  });
+
+  it('reports a sandbox it could not delete without hiding the command result', async () => {
+    await initProject();
+    await stubOpenshell();
+    const log = path.join(dir, 'fail-delete.mjs');
+    // A stand-in whose delete fails: exit 0 for create and exec, 5 for delete.
+    await fs.writeFile(log, "process.exit(process.argv[3] === 'delete' ? 5 : 0);\n");
+    process.env['CWS_TOOL_OPENSHELL'] = log;
+    const io = human();
+    assert.equal(await cli(io, 'sandbox', 'run', '--', 'ls'), EXIT.OK);
+    assert.match(errText(io), /could not delete sandbox cws-\S+; remove it with `cws sandbox down/);
   });
 
   it('lists pending rules and explains how to answer one', async () => {
@@ -754,5 +825,36 @@ describe('cws sandbox: with openshell', () => {
     assert.match(text(io), /sandbox delete cws-/);
     assert.equal(await cli(io, 'sandbox', 'logs'), EXIT.OK);
     assert.match(text(io), /logs cws-.* --source sandbox/);
+  });
+});
+
+describe('sandbox rules: paths, methods and hosts that would widen access', () => {
+  const rest = (method: string, path: string): SandboxNetworkRule => ({ host: 'api.github.com', port: 443, protocol: 'rest', method, path });
+
+  it('refuses paths that climb out of their prefix or hide characters', () => {
+    for (const path of ['/repos/../admin', '/..', '/a/%2e%2e/b', '/a%2Fb', '/a\\b', '/x/%5c']) {
+      assert.match(validateRule(rest('GET', path)) ?? '', /\.\.|encoded|backslash/, path);
+    }
+    assert.equal(validateRule(rest('GET', '/repos/o/r/contents/docs/**')), null);
+    assert.equal(validateRule(rest('GET', '/a..b/c')), null);
+  });
+
+  it('accepts only real HTTP methods', () => {
+    for (const method of ['CONNECT', 'TRACE', 'ANY', 'X']) assert.match(validateRule(rest(method, '/x')) ?? '', /method must be one of/, method);
+    for (const method of ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']) assert.equal(validateRule(rest(method, '/x')), null, method);
+  });
+
+  it('refuses every spelling of the local machine', () => {
+    for (const host of ['localhost', 'LOCALHOST', 'ip6-localhost', 'ip6-loopback', 'app.localhost', '127.0.0.1', '127.1', '2130706433', '0x7f.0.0.1', '0.0.0.0', '169.254.169.254', 'metadata.google.internal']) {
+      assert.notEqual(validateRule({ host, port: 80 }), null, host);
+    }
+    assert.equal(validateRule({ host: '10.0.0.5', port: 443 }), null);
+  });
+
+  it('rules.json with unknown keys, prototype keys or wrong types is an error, not a default', () => {
+    assert.throws(() => parseRules([{ host: 'a.com', port: 443, tls: 'skip' }]), /tls|unrecognized/i);
+    assert.throws(() => parseRules(JSON.parse('[{"host":"a.com","port":443,"__proto__":{"access":"full"}}]')), /__proto__|unrecognized/i);
+    assert.throws(() => parseRules([{ host: 'a.com', port: '443' }]), /port/);
+    assert.throws(() => parseRules({ host: 'a.com', port: 443 }), /array/i);
   });
 });

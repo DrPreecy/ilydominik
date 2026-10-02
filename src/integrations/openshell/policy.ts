@@ -49,7 +49,10 @@ export interface PolicyOptions {
  * would look like an alias and is rejected earlier by `validateRule`, so it is quoted.
  */
 const PLAIN = /^[A-Za-z/][A-Za-z0-9._/:*+\-]*$/;
-const SAFE_METHOD = /^[A-Z]+$/;
+const HTTP_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
+/** `..` segments and percent-encoded dots or slashes would let an allow rule reach past its path. */
+const PATH_ESCAPE = /(?:^|\/)\.\.(?:\/|$)|%2e|%2f|%5c|\\/i;
+const LOOPBACK_NAMES = new Set(['localhost', 'ip6-localhost', 'ip6-loopback']);
 const SAFE_HOST = /^(?:\*\.)?[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/;
 const ACCESS_LEVELS = ['read-only', 'full'] as const;
 /** whitespace and control characters would let a value spill into the surrounding YAML */
@@ -87,7 +90,7 @@ export function ruleName(rule: SandboxNetworkRule): string {
 /** Why an IP literal or name points back into the machine or its cloud metadata, or null. */
 function internalHostProblem(host: string): string | null {
   const name = host.toLowerCase();
-  if (name === 'localhost' || name.endsWith('.localhost')) return `loopback hosts are not allowed: ${host}`;
+  if (LOOPBACK_NAMES.has(name) || name.endsWith('.localhost')) return `loopback hosts are not allowed: ${host}`;
   if (name === 'metadata.google.internal' || name === 'metadata') return `cloud metadata hosts are not allowed: ${host}`;
   const last = name.split('.').at(-1) ?? '';
   if (!/^(?:\d+|0x[0-9a-f]*)$/.test(last)) return null;
@@ -126,11 +129,14 @@ export function validateRule(rule: SandboxNetworkRule): string | null {
   if (rule.host.includes('*')) return `wildcard hosts are not allowed, name the exact host: ${rule.host}`;
   if (!SAFE_HOST.test(rule.host)) return `not a host name: ${rule.host}`;
   if (!Number.isInteger(rule.port) || rule.port < 1 || rule.port > 65535) return `not a port: ${rule.port}`;
-  if (rule.method !== undefined && !SAFE_METHOD.test(rule.method)) return `the method must be upper case letters: ${rule.method}`;
+  if (rule.method !== undefined && !HTTP_METHODS.has(rule.method)) {
+    return `the method must be one of ${[...HTTP_METHODS].join(', ')}: ${rule.method}`;
+  }
   if (rule.path !== undefined) {
     if (!rule.path.startsWith('/')) return `the path must start with "/": ${rule.path}`;
     if (rule.path.includes('?')) return `paths may not carry query strings: ${rule.path}`;
     if (UNSAFE_CHARS.test(rule.path)) return `the path may not contain spaces or control characters: ${JSON.stringify(rule.path)}`;
+    if (PATH_ESCAPE.test(rule.path)) return `the path may not contain "..", backslashes or encoded dots and slashes: ${rule.path}`;
   }
   if (rule.method !== undefined && rule.path === undefined) return 'a method needs a path';
   if (rule.path !== undefined && rule.method === undefined) return 'a path needs a method';

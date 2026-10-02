@@ -7,7 +7,7 @@ import type { EventInput } from '../../domain/types.ts';
 import { hostKind, resolveSandboxMode } from './doctor.ts';
 import { loadIntegrations, TOOL_ENV, toolOverride, type LoadedConfig, type SandboxMode } from '../../integrations/config.ts';
 import { findExecutable, resolveToolCommand, runTool, type RunResult, type ToolCommand } from '../../integrations/exec.ts';
-import { assertSandboxName, connectArgs, createArgs, deleteArgs, logsArgs, projectUpload, ruleApproveArgs, ruleGetArgs, ruleRejectArgs } from '../../integrations/openshell/args.ts';
+import { assertSandboxName, connectArgs, createArgs, deleteArgs, execArgs, logsArgs, projectUpload, ruleApproveArgs, ruleGetArgs, ruleRejectArgs } from '../../integrations/openshell/args.ts';
 import { parseRules, parseRuleSpec, policyFor, ruleName, type SandboxNetworkRule } from '../../integrations/openshell/policy.ts';
 import { windowsToWslPath, wslArgs } from '../../integrations/wsl.ts';
 import { CWS_DIR } from '../../store/event-log.ts';
@@ -168,15 +168,17 @@ export function hostPathFor(mode: SandboxMode, value: string): string {
   return translated;
 }
 
-/** The project upload. Native Windows uploads `.` (the working directory): `E:\p:/sandbox` has two colons. */
-export function uploadSpec(mode: SandboxMode, root: string, platform: NodeJS.Platform = process.platform): string {
-  if (mode === 'wsl') return projectUpload(hostPathFor(mode, root));
-  return projectUpload(platform === 'win32' ? '.' : root);
+/**
+ * The project upload is always `.:/sandbox`: openshell runs with the project as its working
+ * directory in every mode, and an absolute Windows path would break OpenShell's `LOCAL:DEST` split.
+ */
+export function uploadSpec(): string {
+  return projectUpload('.');
 }
 
 function createPaths(env: Env, ctx: SandboxContext, launch: Launch): { policyFile: string; uploads: string[] } {
   try {
-    return { policyFile: hostPathFor(launch.mode, ctx.policyFile), uploads: [uploadSpec(launch.mode, ctx.root)] };
+    return { policyFile: hostPathFor(launch.mode, ctx.policyFile), uploads: [uploadSpec()] };
   } catch (error: unknown) {
     fail(env, `error: ${messageOf(error)}`);
   }
@@ -270,7 +272,7 @@ export function runEvidencePayload(
     evidenceId: newId('e'),
     claimId,
     text: `Sandbox run: \`${command.join(' ')}\` ${outcome}. It reused the policy at ${policyPath}.`,
-    source: 'openshell sandbox create',
+    source: 'openshell sandbox exec',
   };
 }
 
@@ -374,7 +376,7 @@ async function up(env: Env, opts: { name?: string; provider?: string[] }): Promi
   const result = await runOpenshell(
     launch,
     ctx,
-    createArgs({ name: ctx.name, ...paths, providers, approvalMode: 'manual', keep: true }),
+    createArgs({ name: ctx.name, ...paths, providers, approvalMode: 'manual' }),
     600_000,
   );
   report(env, `sandbox ${ctx.name} up`, result);
@@ -395,6 +397,14 @@ async function down(env: Env, opts: { name?: string }): Promise<void> {
   if (!result.ok) throw new CliExit(result.code ?? EXIT.ERROR);
 }
 
+/** Delete a run's sandbox; a failed delete is reported but never hides the command's own result. */
+async function removeSandbox(env: Env, launch: Launch, ctx: SandboxContext): Promise<void> {
+  const removed = await runOpenshell(launch, ctx, deleteArgs(ctx.name), 120_000);
+  if (!removed.ok) {
+    warn(env, `warning: could not delete sandbox ${ctx.name}; remove it with \`cws sandbox down --name ${ctx.name}\`.`);
+  }
+}
+
 async function run(env: Env, command: string[], opts: ActorOpts & { name?: string; claim?: string; keep?: boolean }): Promise<void> {
   if (command.length === 0) fail(env, 'error: nothing to run — use `cws sandbox run -- <command...>`');
   const ctx = await sandboxContext(env, opts.name);
@@ -402,12 +412,17 @@ async function run(env: Env, command: string[], opts: ActorOpts & { name?: strin
   const paths = createPaths(env, ctx, launch);
   await syncPolicy(env, ctx);
 
-  const result = await runOpenshell(
-    launch,
-    ctx,
-    createArgs({ name: ctx.name, ...paths, approvalMode: 'manual', keep: opts.keep === true, command }),
-    900_000,
-  );
+  const created = await runOpenshell(launch, ctx, createArgs({ name: ctx.name, ...paths, approvalMode: 'manual' }), 600_000);
+  if (!created.ok) {
+    report(env, `sandbox ${ctx.name} create`, created);
+    throw new CliExit(created.code ?? EXIT.ERROR);
+  }
+  let result: RunResult;
+  try {
+    result = await runOpenshell(launch, ctx, execArgs(ctx.name, command), 900_000);
+  } finally {
+    if (opts.keep !== true) await removeSandbox(env, launch, ctx);
+  }
   report(env, `sandbox run: ${command.join(' ')}`, result);
 
   if (opts.claim !== undefined) {
