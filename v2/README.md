@@ -39,7 +39,7 @@ cws dump "whatever is in my head, messy is fine"
 
 - **AI suggests, you decide.** Agents run commands with `--agent <name>`. They can record interpretations, assumptions, open questions and evidence, all marked as *unconfirmed AI*. Facts, your statements, decisions, status changes and phase changes only happen when you accept them.
 - **Warnings, not walls.** CWS never blocks you. When you go ahead despite open risks, it asks why (`--accept-risk "…"`), records that as a decision, and reminds you until the risk is resolved.
-- **Nothing is lost.** Everything is an append-only log in `.cws/events.jsonl`. `cws log` shows history; `cws verify` detects manual edits.
+- **Nothing is lost.** Everything is an append-only log in `.cws/events.jsonl`. `cws log` shows history; `cws verify` detects edits to past entries (not entries forged at the end; see Known limits).
 
 ## Known limits (honest)
 

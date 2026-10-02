@@ -1,17 +1,29 @@
 import type { Actor, Claim, CwsEvent, ProjectState, ProposedItem, Warning } from '../domain/types.ts';
 
 const MAX_TEXT = 100;
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
+
+/** Strip terminal control characters from stored text; tabs/newlines become spaces unless kept. */
+export function sanitize(text: string, keepNewlines = false): string {
+  const clean = text.replace(CONTROL, '');
+  return keepNewlines ? clean : clean.replace(/[\t\n]/g, ' ');
+}
 
 export function oneLine(text: string, max = MAX_TEXT): string {
-  const flat = text.replace(/\s+/g, ' ').trim();
+  const flat = sanitize(text).replace(/\s+/g, ' ').trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
 export function actorLabel(actor: Actor): string {
-  return actor.kind === 'human' ? 'human' : `ai:${actor.agent}`;
+  return actor.kind === 'human' ? 'human' : `ai:${sanitize(actor.agent)}`;
 }
 
 export function summarizeItem(item: ProposedItem): string {
+  return sanitize(summarizeRaw(item));
+}
+
+function summarizeRaw(item: ProposedItem): string {
   switch (item.kind) {
     case 'claim': return `claim ${item.type}: ${oneLine(item.text)}`;
     case 'status': return `status ${item.claimId} → ${item.status}`;
@@ -39,15 +51,19 @@ export function describeEvent(e: CwsEvent): string {
 }
 
 export function eventLine(e: CwsEvent): string {
-  return `#${e.seq} ${e.at} ${actorLabel(e.actor)} ${e.type} ${describeEvent(e)}`;
+  return sanitize(`#${e.seq} ${e.at} ${actorLabel(e.actor)} ${e.type} ${describeEvent(e)}`);
 }
 
 export function warningLine(w: Warning): string {
-  return `[${w.severity}] ${w.code}: ${w.message}`;
+  return sanitize(`[${w.severity}] ${w.code}: ${w.message}`);
 }
 
 export function claimLine(c: Claim): string {
-  return `${c.id} ${c.type}${c.risk ? ` risk ${c.risk}` : ''} ${c.status}: ${oneLine(c.text)}`;
+  return sanitize(`${c.id} ${c.type}${c.risk ? ` risk ${c.risk}` : ''} ${c.status}: ${oneLine(c.text)}`);
+}
+
+export function aiClaimLine(c: Claim): string {
+  return `${claimLine(c)} — by ${actorLabel(c.createdBy)}`;
 }
 
 export function claimCounts(state: ProjectState): string {

@@ -40,9 +40,9 @@ async function writeFile(file: string, content: string): Promise<void> {
 /** Insert or replace the cws block, keeping everything else the user wrote. */
 export function upsertBlock(existing: string | null, block: string): string {
   if (existing === null || existing.trim() === '') return `${block}\n`;
-  const start = existing.indexOf(BLOCK_BEGIN);
-  const end = existing.indexOf(BLOCK_END);
-  if (start !== -1 && end > start) return existing.slice(0, start) + block + existing.slice(end + BLOCK_END.length);
+  const start = existing.lastIndexOf(BLOCK_BEGIN);
+  const end = start === -1 ? -1 : existing.indexOf(BLOCK_END, start);
+  if (start !== -1 && end !== -1) return existing.slice(0, start) + block + existing.slice(end + BLOCK_END.length);
   return `${existing.replace(/\s*$/, '')}\n\n${block}\n`;
 }
 

@@ -16,7 +16,8 @@ function claimLine(c: Claim, extra = ''): string {
 }
 
 function noteLine(n: Note): string {
-  return `- [${n.id}] ${indent(n.text)}`;
+  const by = n.actor.kind === 'ai' ? ` — saved by ai:${n.actor.agent}` : '';
+  return `- [${n.id}] ${indent(n.text)}${by}`;
 }
 
 function decisionLine(d: Decision): string {

@@ -1,5 +1,6 @@
 import type { Actor, ProjectState } from '../domain/types.ts';
 import { EventLog, findProjectRoot } from '../store/event-log.ts';
+import { sanitize } from './format.ts';
 import { EXIT, type CliIO } from './io.ts';
 
 /** Thrown after the message has been printed; carries the process exit code. */
@@ -21,11 +22,11 @@ export interface ActorOpts {
 export const NO_PROJECT_MESSAGE = 'No CWS project here. Start one with: cws init <title>';
 
 export function say(env: Env, ...lines: string[]): void {
-  env.io.stdout(`${lines.join('\n')}\n`);
+  env.io.stdout(`${sanitize(lines.join('\n'), true)}\n`);
 }
 
 export function warn(env: Env, ...lines: string[]): void {
-  env.io.stderr(`${lines.join('\n')}\n`);
+  env.io.stderr(`${sanitize(lines.join('\n'), true)}\n`);
 }
 
 export function fail(env: Env, message: string, code: number = EXIT.ERROR): never {

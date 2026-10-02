@@ -2,34 +2,16 @@ import fs from 'node:fs/promises';
 import type { Command } from 'commander';
 import { newId } from '../../domain/ids.ts';
 import { parseEventInput } from '../../domain/schema.ts';
-import type { Claim, EventInput, Proposal } from '../../domain/types.ts';
-import type { EventLog } from '../../store/event-log.ts';
-import { actorLabel, claimLine, oneLine, pendingProposals, summarizeItem, unconfirmedAiClaims } from '../format.ts';
+import type { EventInput, Proposal } from '../../domain/types.ts';
+import { describeProposal } from '../describe.ts';
+import { actorLabel, aiClaimLine, oneLine, pendingProposals, summarizeItem, unconfirmedAiClaims } from '../format.ts';
 import { actorOf, confirmDecision, fail, openLog, requireHuman, say, type Env } from '../human.ts';
-
-const HUMAN = { kind: 'human' } as const;
+import { acceptWithRisk, guarded, printRisk, proposalRisk, rejectOne } from '../proposal-ops.ts';
+import { review } from './review.ts';
+import type { EventLog } from '../../store/event-log.ts';
 const REVIEW_HINT = 'The human reviews with `cws review`.';
-
-/** Id of the thing a proposal turns into once accepted. */
-function resultIdFor(p: Proposal): string {
-  switch (p.item.kind) {
-    case 'claim': return newId('c');
-    case 'decision': return newId('d');
-    case 'status': return p.item.claimId;
-    case 'phase': return p.id;
-  }
-}
-
-async function acceptOne(log: EventLog, p: Proposal): Promise<string> {
-  const resultId = resultIdFor(p);
-  await log.append({ type: 'PROPOSAL_ACCEPTED', actor: HUMAN, payload: { proposalId: p.id, resultId } });
-  return resultId;
-}
-
-async function rejectOne(log: EventLog, p: Proposal, note?: string): Promise<void> {
-  const payload = note ? { proposalId: p.id, note } : { proposalId: p.id };
-  await log.append({ type: 'PROPOSAL_REJECTED', actor: HUMAN, payload });
-}
+const MAX_INPUT_CHARS = 1_000_000;
+const MAX_BATCH = 50;
 
 // ---------------------------------------------------------------------------
 // propose
@@ -56,12 +38,22 @@ function toInput(env: Env, entry: unknown, index: number, agent: string): EventI
   }
 }
 
-async function readJson(env: Env, source: string): Promise<unknown> {
+async function readRaw(env: Env, source: string): Promise<string> {
+  if (source !== '-') {
+    const { size } = await fs.stat(source);
+    if (size > MAX_INPUT_CHARS * 4) fail(env, 'error: the proposal input is too large (limit 1 MB)');
+  }
   const raw = source === '-' ? await env.io.readStdin() : await fs.readFile(source, 'utf8');
+  if (raw.length > MAX_INPUT_CHARS) fail(env, 'error: the proposal input is too large (limit 1 MB)');
+  return raw;
+}
+
+async function readJson(env: Env, source: string): Promise<unknown> {
   try {
-    return JSON.parse(raw);
-  } catch {
-    return fail(env, 'error: the proposal input is not valid JSON');
+    return JSON.parse(await readRaw(env, source));
+  } catch (error: unknown) {
+    if (error instanceof SyntaxError) return fail(env, 'error: the proposal input is not valid JSON');
+    throw error;
   }
 }
 
@@ -69,11 +61,12 @@ async function propose(env: Env, opts: { agent?: string; role?: string; json?: s
   if (!opts.agent) fail(env, 'error: --agent <name> is required — proposals are how AI agents speak (e.g. --agent copilot)');
   if (!opts.json) fail(env, 'error: --json <file|-> is required');
   const { agent } = opts;
-  const inputs = entriesOf(await readJson(env, opts.json)).map((e, i) => toInput(env, e, i, agent));
+  const entries = entriesOf(await readJson(env, opts.json));
+  if (entries.length > MAX_BATCH) fail(env, `error: too many proposals (${entries.length}); the limit is ${MAX_BATCH} per batch`);
+  const inputs = entries.map((e, i) => toInput(env, e, i, agent));
   if (inputs.length === 0) fail(env, 'error: no proposals found in the input');
   const log = await openLog(env);
-  for (const input of inputs) {
-    const event = await log.append(input);
+  for (const event of await log.appendBatch(inputs)) {
     if (event.type === 'PROPOSAL_SUBMITTED') say(env, `proposed [${event.payload.proposalId}] ${summarizeItem(event.payload.item)}`);
   }
   say(env, REVIEW_HINT);
@@ -90,10 +83,6 @@ function proposalLines(p: Proposal): string[] {
   ];
 }
 
-function aiClaimLine(c: Claim): string {
-  return `${claimLine(c)} — by ${actorLabel(c.createdBy)}`;
-}
-
 async function inbox(env: Env): Promise<void> {
   const state = (await openLog(env)).state;
   const proposals = pendingProposals(state);
@@ -104,15 +93,28 @@ async function inbox(env: Env): Promise<void> {
   say(env, 'Review them with `cws review`.');
 }
 
-async function accept(env: Env, ids: string[], opts: { all?: boolean }): Promise<void> {
+async function acceptStep(env: Env, log: EventLog, p: Proposal, acceptRisk?: string): Promise<void> {
+  const warnings = proposalRisk(log, p);
+  if (warnings.length > 0 && !acceptRisk) {
+    say(env, `[${p.id}] has warnings and was NOT accepted:`);
+    printRisk(env, warnings);
+    say(env, `To accept anyway: cws accept ${p.id} --accept-risk "<why you accept this risk>"`);
+    return;
+  }
+  say(env, `accepted [${p.id}] → ${await acceptWithRisk(log, p, warnings, acceptRisk)}`);
+}
+
+async function accept(env: Env, ids: string[], opts: { all?: boolean; acceptRisk?: string }): Promise<void> {
   requireHuman(env, 'accept');
   const log = await openLog(env);
   const pending = pendingProposals(log.state);
   if (ids.length === 0 && !opts.all) fail(env, 'error: give proposal ids, or --all');
-  const chosen = opts.all ? pending : ids.map((id) => pending.find((p) => p.id === id) ?? fail(env, `error: no pending proposal ${id}`));
+  const unique = [...new Set(ids)];
+  const chosen = opts.all ? pending : unique.map((id) => pending.find((p) => p.id === id) ?? fail(env, `error: no pending proposal ${id}`));
   if (chosen.length === 0) return say(env, 'Nothing pending.');
+  say(env, ...chosen.map((p) => describeProposal(p, log.state)));
   await confirmDecision(env);
-  for (const p of chosen) say(env, `accepted [${p.id}] → ${await acceptOne(log, p)}`);
+  for (const p of chosen) await guarded(env, p.id, () => acceptStep(env, log, p, opts.acceptRisk));
 }
 
 async function reject(env: Env, id: string, opts: { note?: string }): Promise<void> {
@@ -122,75 +124,6 @@ async function reject(env: Env, id: string, opts: { note?: string }): Promise<vo
   if (!p) fail(env, `error: no pending proposal ${id}`);
   await rejectOne(log, p, opts.note);
   say(env, `rejected [${id}]`);
-}
-
-// ---------------------------------------------------------------------------
-// review
-// ---------------------------------------------------------------------------
-
-interface Tally {
-  accepted: number;
-  rejected: number;
-  confirmed: number;
-  retired: number;
-  skipped: number;
-}
-
-type Verdict = 'quit' | 'continue';
-
-async function reviewProposal(env: Env, log: EventLog, p: Proposal, tally: Tally): Promise<Verdict> {
-  say(env, '', ...proposalLines(p));
-  const key = (await env.io.ask('[a]ccept [r]eject [s]kip [q]uit: ')).trim().toLowerCase();
-  if (key === 'q') return 'quit';
-  if (key === 'a') {
-    await acceptOne(log, p);
-    tally.accepted++;
-  } else if (key === 'r') {
-    await rejectOne(log, p, (await env.io.ask('Reason (optional): ')).trim() || undefined);
-    tally.rejected++;
-  } else {
-    tally.skipped++;
-  }
-  return 'continue';
-}
-
-async function reviewClaim(env: Env, log: EventLog, c: Claim, tally: Tally): Promise<Verdict> {
-  say(env, '', aiClaimLine(c));
-  const key = (await env.io.ask('[c]onfirm [r]etire [s]kip [q]uit: ')).trim().toLowerCase();
-  if (key === 'q') return 'quit';
-  if (key === 'c') {
-    await log.append({ type: 'CLAIM_CONFIRMED', actor: HUMAN, payload: { claimId: c.id } });
-    tally.confirmed++;
-  } else if (key === 'r') {
-    await log.append({ type: 'CLAIM_STATUS_CHANGED', actor: HUMAN, payload: { claimId: c.id, status: 'RETIRED' } });
-    tally.retired++;
-  } else {
-    tally.skipped++;
-  }
-  return 'continue';
-}
-
-async function review(env: Env): Promise<void> {
-  requireHuman(env, 'review');
-  const log = await openLog(env);
-  if (pendingProposals(log.state).length === 0 && unconfirmedAiClaims(log.state).length === 0) return say(env, 'Inbox empty.');
-  await confirmDecision(env);
-  const tally: Tally = { accepted: 0, rejected: 0, confirmed: 0, retired: 0, skipped: 0 };
-  let verdict: Verdict = 'continue';
-  for (const p of pendingProposals(log.state)) {
-    verdict = await reviewProposal(env, log, p, tally);
-    if (verdict === 'quit') break;
-  }
-  for (const c of verdict === 'quit' ? [] : unconfirmedAiClaims(log.state)) {
-    verdict = await reviewClaim(env, log, c, tally);
-    if (verdict === 'quit') break;
-  }
-  say(
-    env,
-    '',
-    `Review done: ${tally.accepted} accepted, ${tally.rejected} rejected, ${tally.confirmed} confirmed, ` +
-      `${tally.retired} retired, ${tally.skipped} skipped.`,
-  );
 }
 
 export function registerProposals(program: Command, env: Env): void {
@@ -206,7 +139,8 @@ export function registerProposals(program: Command, env: Env): void {
     .command('accept [ids...]')
     .description('accept proposals (human)')
     .option('--all', 'accept every pending proposal')
-    .action((ids: string[], o: { all?: boolean }) => accept(env, ids, o));
+    .option('--accept-risk <why>', 'accept a phase proposal despite warnings, and say why')
+    .action((ids: string[], o: { all?: boolean; acceptRisk?: string }) => accept(env, ids, o));
   program
     .command('reject <id>')
     .description('reject a proposal (human)')

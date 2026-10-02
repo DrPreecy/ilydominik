@@ -2,8 +2,11 @@ import { z } from 'zod';
 import { CLAIM_STATUSES, CLAIM_TYPES, DomainError, PHASES, RISKS } from './types.ts';
 import type { CwsEvent, EventInput } from './types.ts';
 
-const text = z.string().refine((s) => s.trim().length > 0, 'must not be blank');
+const MAX_TEXT = 20_000;
+const SAFE_LABEL = /^[A-Za-z0-9._-]{1,40}$/;
+const text = z.string().max(MAX_TEXT).refine((s) => s.trim().length > 0, 'must not be blank');
 const optText = text.optional();
+const label = z.string().regex(SAFE_LABEL);
 const phase = z.enum(PHASES);
 const claimType = z.enum(CLAIM_TYPES);
 const claimStatus = z.enum(CLAIM_STATUSES);
@@ -12,7 +15,7 @@ const ids = z.array(text);
 
 const actorSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('human') }),
-  z.object({ kind: z.literal('ai'), agent: text, role: optText }),
+  z.object({ kind: z.literal('ai'), agent: label, role: label.optional() }),
 ]);
 
 const proposedItem = z.discriminatedUnion('kind', [

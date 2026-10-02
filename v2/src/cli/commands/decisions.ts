@@ -1,9 +1,9 @@
 import type { Command } from 'commander';
 import { newId } from '../../domain/ids.ts';
-import { CLAIM_STATUSES, CLAIM_TYPES, PHASES, type ClaimStatus, type ClaimType, type Phase, type ProjectState, type Warning } from '../../domain/types.ts';
+import { CLAIM_STATUSES, CLAIM_TYPES, PHASES, type ClaimStatus, type ClaimType, type Phase, type ProjectState } from '../../domain/types.ts';
 import { phaseWarnings } from '../../guidance/warnings.ts';
-import type { EventLog } from '../../store/event-log.ts';
 import { oneLine, warningLine } from '../format.ts';
+import { isRisky, recordOverride } from '../override.ts';
 import { EXIT } from '../io.ts';
 import { CliExit, confirmDecision, fail, openLog, requireClaim, requireHuman, say, splitList, type Env } from '../human.ts';
 
@@ -29,6 +29,7 @@ async function retire(env: Env, claimId: string, opts: { reason?: string }): Pro
   requireHuman(env, 'retire');
   const log = await openLog(env);
   requireClaim(env, log.state, claimId);
+  await confirmDecision(env);
   const payload = { claimId, status: 'RETIRED' as const, ...(opts.reason ? { evidence: opts.reason } : {}) };
   await log.append({ type: 'CLAIM_STATUS_CHANGED', actor: HUMAN, payload });
   say(env, `retired [${claimId}]`);
@@ -80,8 +81,6 @@ async function decide(env: Env, o: DecideOpts): Promise<void> {
 // phase
 // ---------------------------------------------------------------------------
 
-const isRisky = (w: Warning): boolean => w.severity === 'caution' || w.severity === 'serious';
-
 function printAffected(env: Env, state: ProjectState): void {
   const ids = state.phaseHistory.at(-1)?.possiblyAffected ?? [];
   if (ids.length === 0) return;
@@ -105,28 +104,10 @@ async function phase(env: Env, phaseArg: string, o: { reason: string; acceptRisk
     throw new CliExit(EXIT.NEEDS_HUMAN);
   }
   await confirmDecision(env);
-  if (o.acceptRisk && warnings.length > 0) await recordOverride(log, to, o.acceptRisk, warnings);
+  if (o.acceptRisk && warnings.length > 0) await recordOverride(log, to, warnings, o.acceptRisk);
   await log.append({ type: 'PHASE_CHANGED', actor: HUMAN, payload: { to, reason: o.reason } });
   say(env, `phase → ${to}`);
   printAffected(env, log.state);
-}
-
-async function recordOverride(log: EventLog, to: Phase, why: string, warnings: Warning[]): Promise<void> {
-  const known = new Set(log.state.claims.map((c) => c.id));
-  const links = [...new Set(warnings.flatMap((w) => w.refs).filter((r) => known.has(r)))];
-  await log.append({
-    type: 'DECISION_RECORDED',
-    actor: HUMAN,
-    payload: {
-      decisionId: newId('d'),
-      title: `Proceed to ${to} under uncertainty`,
-      options: ['proceed', 'wait'],
-      selected: 'proceed',
-      rationale: why,
-      links,
-      kind: 'PROCEED_UNDER_UNCERTAINTY',
-    },
-  });
 }
 
 export function registerDecisions(program: Command, env: Env): void {

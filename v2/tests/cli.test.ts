@@ -209,7 +209,7 @@ describe('cli: the human/agent boundary', () => {
     assert.equal(await cli(human(), 'reject', p2!, '--note', 'wrong'), EXIT.OK);
     assert.equal(await cli(human(['K7Q']), 'confirm', c!), EXIT.OK);
     assert.equal(await cli(human(['K7Q']), 'mark', c!, 'falsified', '--evidence', 'tested it'), EXIT.OK);
-    assert.equal(await cli(human(), 'retire', d!, '--reason', 'irrelevant'), EXIT.OK);
+    assert.equal(await cli(human(['K7Q']), 'retire', d!, '--reason', 'irrelevant'), EXIT.OK);
     s = await state();
     assert.deepEqual(s.proposals.map((p) => p.status), ['ACCEPTED', 'REJECTED']);
     assert.equal(s.claims.find((x) => x.text === 'A')?.type, 'FACT');

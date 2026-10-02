@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -13,8 +13,8 @@ export const EVENTS_FILE = 'events.jsonl';
 const LOCK_FILE = 'lock';
 const GENESIS_HASH = '0'.repeat(64);
 const LOCK_RETRY_MS = 15;
-const LOCK_TIMEOUT_MS = 3000;
-const LOCK_STALE_MS = 10_000;
+const LOCK_TIMEOUT_MS = 8000;
+const LOCK_STALE_MS = 5000;
 
 export interface Integrity {
   ok: boolean;
@@ -83,28 +83,51 @@ function isErrno(err: unknown, code: string): boolean {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function removeIfStale(lockPath: string): Promise<void> {
+async function isStale(lockPath: string): Promise<boolean> {
   try {
     const { mtimeMs } = await fs.stat(lockPath);
-    if (Date.now() - mtimeMs > LOCK_STALE_MS) await fs.rm(lockPath, { force: true });
+    return Date.now() - mtimeMs > LOCK_STALE_MS;
   } catch (err) {
-    if (!isErrno(err, 'ENOENT')) throw err;
+    if (isErrno(err, 'ENOENT')) return false;
+    throw err;
   }
 }
 
-async function acquireLock(lockPath: string): Promise<void> {
+/** Atomically replace a stale lock with a fresh one carrying our nonce. */
+async function takeOver(lockPath: string, nonce: string): Promise<boolean> {
+  const tmp = `${lockPath}.${nonce}`;
+  await fs.writeFile(tmp, nonce);
+  try {
+    await fs.rename(tmp, lockPath);
+  } catch (err) {
+    await fs.rm(tmp, { force: true });
+    if (isErrno(err, 'EPERM') || isErrno(err, 'EBUSY') || isErrno(err, 'EACCES')) return false;
+    throw err;
+  }
+  return (await fs.readFile(lockPath, 'utf8').catch(() => '')) === nonce;
+}
+
+/** Acquire the lock; returns the nonce that proves ownership. */
+async function acquireLock(lockPath: string): Promise<string> {
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  const nonce = randomBytes(12).toString('hex');
   for (;;) {
     try {
-      await (await fs.open(lockPath, 'wx')).close();
-      return;
+      await fs.writeFile(lockPath, nonce, { flag: 'wx' });
+      return nonce;
     } catch (err) {
       if (!isErrno(err, 'EEXIST') && !isErrno(err, 'EPERM') && !isErrno(err, 'EBUSY')) throw err;
     }
     if (Date.now() > deadline) throw new Error(`timed out waiting for lock ${lockPath}`);
-    await removeIfStale(lockPath);
+    if ((await isStale(lockPath)) && (await takeOver(lockPath, nonce))) return nonce;
     await sleep(LOCK_RETRY_MS);
   }
+}
+
+/** Remove the lock only if it is still ours. */
+async function releaseLock(lockPath: string, nonce: string): Promise<void> {
+  const current = await fs.readFile(lockPath, 'utf8').catch(() => null);
+  if (current === nonce) await fs.rm(lockPath, { force: true });
 }
 
 export class EventLog {
@@ -164,34 +187,47 @@ export class EventLog {
   }
 
   async append(input: EventInput): Promise<CwsEvent> {
-    const parsed = parseEventInput(input);
+    return (await this.appendBatch([input]))[0] as CwsEvent;
+  }
+
+  /** All-or-nothing: every input is folded against the state in memory first, then written in one append. */
+  async appendBatch(inputs: readonly EventInput[]): Promise<CwsEvent[]> {
+    const parsed = inputs.map((i) => parseEventInput(i));
     const lockPath = path.join(this.rootDir, CWS_DIR, LOCK_FILE);
-    await acquireLock(lockPath);
+    const nonce = await acquireLock(lockPath);
     try {
       return await this.appendLocked(parsed);
     } finally {
-      await fs.rm(lockPath, { force: true });
+      await releaseLock(lockPath, nonce);
     }
   }
 
-  private async appendLocked(input: EventInput): Promise<CwsEvent> {
+  private async appendLocked(inputs: readonly EventInput[]): Promise<CwsEvent[]> {
     const file = EventLog.filePath(this.rootDir);
-    const events = await readEvents(file);
-    const state = fold(events);
-    const body = {
-      v: 1,
-      seq: state ? state.lastSeq + 1 : 0,
-      id: newId('ev'),
-      at: new Date().toISOString(),
-      ...(state?.activeSessionId === undefined ? {} : { sessionId: state.activeSessionId }),
-      prevHash: events.at(-1)?.hash ?? GENESIS_HASH,
-      ...input,
-    } as EventBody;
-    const event = { ...body, hash: computeHash(body) } as CwsEvent;
-    const nextState = reduce(state, event);
-    await fs.appendFile(file, `${JSON.stringify(event)}\n`);
-    this._events = [...events, event];
-    this._state = nextState;
-    return event;
+    const raw = await fs.readFile(file, 'utf8');
+    const events = parseLines(raw);
+    let state = fold(events);
+    let prevHash = events.at(-1)?.hash ?? GENESIS_HASH;
+    const added: CwsEvent[] = [];
+    for (const input of inputs) {
+      const body = {
+        v: 1,
+        seq: state ? state.lastSeq + 1 : 0,
+        id: newId('ev'),
+        at: new Date().toISOString(),
+        ...(state?.activeSessionId === undefined ? {} : { sessionId: state.activeSessionId }),
+        prevHash,
+        ...input,
+      } as EventBody;
+      const event = { ...body, hash: computeHash(body) } as CwsEvent;
+      state = reduce(state, event);
+      prevHash = event.hash;
+      added.push(event);
+    }
+    const lead = raw.length > 0 && !raw.endsWith('\n') ? '\n' : '';
+    await fs.appendFile(file, lead + added.map((e) => JSON.stringify(e) + '\n').join(''));
+    this._events = [...events, ...added];
+    this._state = state;
+    return added;
   }
 }

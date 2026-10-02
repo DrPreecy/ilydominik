@@ -20,5 +20,5 @@
 # ADR 0003 — Human check is friction plus detection, not security
 
 - Status: accepted (2026-10-02)
-- Decision: commands without `--agent` need an interactive terminal. Decision-level commands need a typed challenge code. The log is hash-chained.
+- Decision: commands without `--agent` need an interactive terminal. Authoritative commands need a typed challenge code. The log is hash-chained (detects edits to existing events, not forged appended events or truncation).
 - Consequences: honest about the limits (see spec §2). A stronger guarantee (a signing key outside the agent's reach) is deferred.

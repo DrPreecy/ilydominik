@@ -21,12 +21,12 @@ Replaces `specs/state-machine-spec.md` (v1). Source of intent: `starttoughts.md`
 
 The reducer enforces this by actor *kind*, not by a self-declared label (v1 bug #1).
 
-**Honest limit:** on a local machine, an agent with shell access can append to the log by hand or impersonate a human in a terminal. v2 makes forging *deliberate and detectable*, not impossible:
-- human decision-level commands need an interactive challenge code
+**Honest limit:** on a local machine, an agent with shell access can append to the log by hand or impersonate a human in a terminal. v2 makes forging *deliberate*, not impossible:
+- authoritative human commands (decide, accept, confirm, mark, retire, phase, review, and human FACT/USER_STATEMENT claims) need an interactive challenge code
 - non-interactive calls without `--agent` are refused
-- the log is hash-chained, so `cws verify` and `cws status` report edits
+- the log is hash-chained, so `cws verify` and `cws status` detect **edits to or reordering of existing events**
 
-Someone who rewrites every later hash is not detectable without a secret key; that is out of scope for the MVP.
+They do **not** detect a correctly chained event *appended* at the end, a truncated log, or a fully re-hashed rewrite; that needs a secret key (an HMAC with the key stored outside the agent's reach), which is deferred. (Corrected after independent review, 2026-10-02.)
 
 ## 3. Warnings, not gates (§24)
 

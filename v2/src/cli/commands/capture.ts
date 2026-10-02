@@ -1,7 +1,7 @@
 import type { Command } from 'commander';
 import { newId } from '../../domain/ids.ts';
 import type { ClaimType, Risk } from '../../domain/types.ts';
-import { actorOf, fail, openLog, requireHumanUnlessAgent, say, splitList, type ActorOpts, type Env } from '../human.ts';
+import { actorOf, confirmDecision, fail, openLog, requireHumanUnlessAgent, say, splitList, type ActorOpts, type Env } from '../human.ts';
 
 interface AddClaimOpts extends ActorOpts {
   type: string;
@@ -15,6 +15,8 @@ interface AddEvidenceOpts extends ActorOpts {
   text: string;
   source?: string;
 }
+
+const AUTHORITATIVE_TYPES = new Set(['FACT', 'USER_STATEMENT']);
 
 const isStdinMarker = (parts: string[]): boolean => parts.length === 0 || (parts.length === 1 && parts[0] === '-');
 
@@ -31,6 +33,7 @@ async function dump(env: Env, parts: string[], opts: ActorOpts): Promise<void> {
 async function addClaim(env: Env, o: AddClaimOpts): Promise<void> {
   requireHumanUnlessAgent(env, 'claim add', o);
   const log = await openLog(env);
+  if (!o.agent && AUTHORITATIVE_TYPES.has(o.type.toUpperCase())) await confirmDecision(env);
   const claimId = newId('c');
   const derivedFrom = splitList(o.from);
   const payload = {
