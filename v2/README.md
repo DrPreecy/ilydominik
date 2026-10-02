@@ -25,7 +25,7 @@ cws dump "whatever is in my head, messy is fine"
 ## Daily loop
 
 | You want to… | Run |
-|---|---|
+| --- | --- |
 | see where you are | `cws status` |
 | know what to do next | `cws next` |
 | get the ready prompt for option N (copied to clipboard) | `cws prompt 1 --copy` |
@@ -47,7 +47,14 @@ cws dump "whatever is in my head, messy is fine"
 - Human commands need a real terminal. Piping text into `cws dump -` as a human is refused; type it or pass it as an argument.
 - The Antigravity workflow folder (`.agent/workflows/`) follows community docs; check that `/cws-*` shows up in your Antigravity version.
 - There's no MCP server yet; agents use the CLI in their terminal.
+- `safe-run` is an advisory native-executable guard, not a sandbox. Shell-only builtins such as PowerShell `Remove-Item` are refused; arbitrary executables and filesystem races remain outside its guarantees.
+- A dead or malformed lock-recovery marker causes an explicit error. Before removing only that marker, stop all writers and prevent restarts. Do not delete an active lock based on age. Hard-link support is required for recovery ownership.
+- A failed session handoff export can be retried with `session end`; the recorded session completion is not duplicated.
 
 ## Develop
 
-`npm test` (108 tests incl. the v1 attack probes) · `npm run typecheck` · `npm run coverage`
+From the repository root, `npm test`, `npm run typecheck`, `npm run build`, and
+`npm run coverage` target this canonical implementation. See [the root guide](../README.md)
+for setup and explicit historical compatibility commands.
+
+Inside `v2/`: `npm test` (173 tests including attack probes and command guard) · `npm run typecheck` · `npm run coverage`

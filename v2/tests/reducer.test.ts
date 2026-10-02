@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { reduce, fold } from '../src/domain/reducer.ts';
+import { CLAIM_STATUSES, CLAIM_TYPES, type ClaimStatus, type ClaimType } from '../src/domain/types.ts';
 import { AI, HUMAN, errCode, project, run, stamp, step } from './helpers.ts';
 
 describe('reducer: lifecycle', () => {
@@ -86,6 +87,56 @@ describe('reducer: notes and sessions', () => {
 });
 
 describe('reducer: claims', () => {
+  it('enforces the type/status matrix for direct changes and status proposals', () => {
+    const allowed: Record<ClaimType, readonly ClaimStatus[]> = {
+      USER_STATEMENT: ['OPEN', 'RETIRED'],
+      FACT: ['OPEN', 'RETIRED'],
+      INTERPRETATION: ['OPEN', 'RETIRED'],
+      ASSUMPTION: ['OPEN', 'TESTING', 'SUPPORTED', 'FALSIFIED', 'RETIRED'],
+      HYPOTHESIS: ['OPEN', 'TESTING', 'SUPPORTED', 'FALSIFIED', 'RETIRED'],
+      UNKNOWN: ['OPEN', 'TESTING', 'ANSWERED', 'RETIRED'],
+    };
+    for (const type of CLAIM_TYPES) {
+      const initial = step(project(), { type: 'CLAIM_ADDED', actor: HUMAN, payload: { claimId: 'claim', type, text: 'premise' } });
+      for (const status of CLAIM_STATUSES) {
+        const payload = { claimId: 'claim', status, ...(status === 'ANSWERED' ? { answer: 'measured result' } : {}) };
+        const change = () => step(initial, { type: 'CLAIM_STATUS_CHANGED', actor: HUMAN, payload });
+        const propose = () => step(initial, { type: 'PROPOSAL_SUBMITTED', actor: AI, payload: { proposalId: 'proposal', item: { kind: 'status', ...payload } } });
+        if (allowed[type].includes(status)) {
+          assert.equal(change().claims[0]!.status, status);
+          assert.equal(step(propose(), { type: 'PROPOSAL_ACCEPTED', actor: HUMAN, payload: { proposalId: 'proposal', resultId: 'claim' } }).claims[0]!.status, status);
+        } else {
+          assert.throws(change, errCode('INVALID_EVENT'), `${type}/${status}`);
+          assert.throws(propose, errCode('INVALID_EVENT'), `${type}/${status} proposal`);
+        }
+      }
+    }
+  });
+
+  it('requires a nonblank answer for direct and proposed UNKNOWN answers', () => {
+    const initial = step(project(), { type: 'CLAIM_ADDED', actor: HUMAN, payload: { claimId: 'question', type: 'UNKNOWN', text: 'why?' } });
+    for (const answer of [undefined, '', ' \n\t']) {
+      const payload = { claimId: 'question', status: 'ANSWERED' as const, ...(answer === undefined ? {} : { answer }) };
+      assert.throws(() => step(initial, { type: 'CLAIM_STATUS_CHANGED', actor: HUMAN, payload }), errCode('INVALID_EVENT'));
+      assert.throws(() => step(initial, { type: 'PROPOSAL_SUBMITTED', actor: AI, payload: { proposalId: 'proposal', item: { kind: 'status', ...payload } } }), errCode('INVALID_EVENT'));
+    }
+  });
+
+  it('rejects retyping an incompatible status and revalidates proposals at acceptance', () => {
+    const initial = step(project(), { type: 'CLAIM_ADDED', actor: AI, payload: { claimId: 'claim', type: 'ASSUMPTION', text: 'premise' } });
+    const supported = step(initial, { type: 'CLAIM_STATUS_CHANGED', actor: HUMAN, payload: { claimId: 'claim', status: 'SUPPORTED' } });
+    assert.throws(() => step(supported, { type: 'CLAIM_CONFIRMED', actor: HUMAN, payload: { claimId: 'claim', asType: 'FACT' } }), errCode('INVALID_EVENT'));
+    const proposed = step(initial, { type: 'PROPOSAL_SUBMITTED', actor: AI, payload: { proposalId: 'proposal', item: { kind: 'status', claimId: 'claim', status: 'SUPPORTED' } } });
+    const retyped = step(proposed, { type: 'CLAIM_CONFIRMED', actor: HUMAN, payload: { claimId: 'claim', asType: 'FACT' } });
+    assert.throws(() => step(retyped, { type: 'PROPOSAL_ACCEPTED', actor: HUMAN, payload: { proposalId: 'proposal', resultId: 'claim' } }), errCode('INVALID_EVENT'));
+    assert.equal(retyped.proposals[0]!.status, 'PENDING');
+  });
+
+  it('rejects ANSWERED on an assumption', () => {
+    const state = step(project(), { type: 'CLAIM_ADDED', actor: HUMAN, payload: { claimId: 'fatal', type: 'ASSUMPTION', text: 'dependency', risk: 'FATAL' } });
+    assert.throws(() => step(state, { type: 'CLAIM_STATUS_CHANGED', actor: HUMAN, payload: { claimId: 'fatal', status: 'ANSWERED' } }), errCode('INVALID_EVENT'));
+  });
+
   it('human claims are confirmed; AI claims are not', () => {
     const s = run(
       [

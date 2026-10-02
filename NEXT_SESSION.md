@@ -1,6 +1,16 @@
 # Next Session Handoff: Cognitive Work System (CWS)
 
-> **Zweck dieser Datei:**  
+## Current Entrypoint (2026-10-02)
+
+Start with [README.md](README.md) and [REVIEW.md](REVIEW.md). Root verification
+commands now target the canonical event-sourced CLI in `v2/`; use `legacy:*`
+scripts for the historical snapshot model. The original material below is
+preserved as historical context, not a statement of the current default API.
+Code/security audit repairs are integrated and independently reviewed. See
+[REVIEW.md](REVIEW.md) for verification and remaining limits, and
+[RESEARCH.md](RESEARCH.md) for the network-blocked external research queue.
+
+> **Zweck dieser Datei:**
 > Diese Datei ist der direkte Einstiegspunkt („Cold-Start“) für den nächsten Chat. Sie enthält den aktuellen Projektstand, die offenen Systemfragen für das Meta-Operating-Model und die Analyse der besten Open-Source-Agent-Skillsets.
 
 ---
@@ -47,34 +57,10 @@ In der nächsten Session soll die **Meta-Ebene** (das „Betriebssystem für die
 
 Eine Recherche im GitHub-Ökosystem zeigt drei maßgebliche Vorbilder, deren Konzepte wir für das Cognitive Work System adaptieren können:
 
-### A. `obra/superpowers` (294k+ ⭐) – *Der Goldstandard für SDLC-Workflows*
-- **Kernkonzept:** Zwingt den Agenten in deterministische Best Practices, bevor Code geschrieben wird.
-- **Wichtigste Skills:**
-  - `brainstorming`: Sokratische Entschlüsselung vager Ideen in kleine, lesbare Design-Häppchen.
-  - `writing-plans`: Zerlegung in mundgerechte 2–5-Minuten-Tasks mit exakten Pfaden und Verifikationstests.
-  - `subagent-driven-development`: Trennung von Planer, Builder und Reviewer.
-  - `test-driven-development`: Harter Red-Green-Refactor-Zwang (Code ohne Test wird gelöscht).
-  - `requesting-code-review`: Strikte Review-Checkliste gegen den Plan vor dem Merge.
-
-### B. `WorldFlowAI/everything-claude-code` (ECC) & `agent-sh/agentsys`
-- **Kernkonzept:** Modularer Werkzeugkasten aus spezialisierten Rollen-Agenten (Architect, Reviewer, Performance Optimizer, Security Auditor) und Hooks.
-- **Relevanz für CWS:** Progressive Context Disclosure – der Agent lädt nur die Regeln und Skills, die für die aktuelle Phase nötig sind.
-
-### C. `thedotmack/claude-mem` & `coleam00/claude-memory-compiler`
-- **Kernkonzept:** Persistent Context across Sessions.
-- **Relevanz für CWS:** Automatische Extraktion von Entscheidungen und Lessons Learned nach jeder Sitzung, Kompilierung in einen strukturierten Wissensgraphen.
+what are the best generic github skillset, tools etc. for agentic a deep research and browse first over what is exisitng and then secondly a discussion which and how will be used.
 
 ---
 
 ## 4. Prompt für den Start des neuen Chats
 
-Kopiere einfach diesen Prompt in das Eingabefeld der neuen Session:
-
-```markdown
-Ich starte eine neue Session am Cognitive Work System (CWS).
-Bitte lies zuerst die Datei `NEXT_SESSION.md` und `specs/state-machine-spec.md` ein.
-Unser heutiger Fokus:
-1. Führe mit mir ein strukturiertes sokratisches Interview zu den offenen System-Fragen des Meta-Operating-Models (Session-Lifecycle, Review-Gates, Kontext-Transfer).
-2. Evaluiere mit mir, welche Muster aus `obra/superpowers` und `claude-mem` wir nativ in unser System übernehmen.
-3. Formuliere die Antworten als verbindliche Spezifikation `specs/meta-operating-model.md`.
-```
+i dont want to have to copy my prompts manually any more and i also dont want to manually keep track ofthe steps and if they were probally made and the next one espscally as if there is nothing as defined steps etc yet so.

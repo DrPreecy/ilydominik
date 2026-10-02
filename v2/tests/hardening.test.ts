@@ -235,8 +235,9 @@ describe('finding 10/11: install-agents block safety; AI notes are attributed', 
     const md = buildContext(await state(), 'understand');
     const aiLine = md.split('\n').find((l) => l.includes('AI-SAVED-NOTE'))!;
     const humanLine = md.split('\n').find((l) => l.includes('HUMAN-NOTE'))!;
-    assert.match(aiLine, /ai:copilot/);
-    assert.doesNotMatch(humanLine, /ai:/);
+    assert.match(aiLine, /"actor":\{"kind":"ai","agent":"copilot"\}/);
+    assert.match(humanLine, /"actor":\{"kind":"human"\}/);
+    assert.doesNotMatch(humanLine, /"kind":"ai"/);
   });
 });
 
@@ -248,11 +249,15 @@ describe('finding 8/9: log robustness', () => {
     assert.equal((await state()).notes.length, 1);
   });
 
-  it('a stale lock left by a crash is taken over without a 10s outage', async () => {
+  it('a lock with a confirmed dead owner is recovered without a 10s outage', async (t) => {
     const lock = path.join(dir, '.cws', 'lock');
-    await fs.writeFile(lock, 'dead');
-    const old = new Date(Date.now() - 60_000);
-    await fs.utimes(lock, old, old);
+    const deadPid = 999999;
+    const originalKill = process.kill.bind(process);
+    t.mock.method(process, 'kill', (pid: number, signal?: Parameters<typeof process.kill>[1]) => {
+      if (pid === deadPid) throw Object.assign(new Error('dead owner'), { code: 'ESRCH' });
+      return originalKill(pid, signal);
+    });
+    await fs.writeFile(lock, JSON.stringify({ pid: deadPid, nonce: 'dead' }));
     const t0 = Date.now();
     assert.equal(await cli(human(), 'dump', 'x'), EXIT.OK);
     assert.ok(Date.now() - t0 < 2000);

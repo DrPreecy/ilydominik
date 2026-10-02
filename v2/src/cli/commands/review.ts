@@ -1,7 +1,7 @@
 import type { Claim, Proposal } from '../../domain/types.ts';
 import type { EventLog } from '../../store/event-log.ts';
-import { describeProposal } from '../describe.ts';
-import { aiClaimLine, pendingProposals, unconfirmedAiClaims } from '../format.ts';
+import { describeClaim, describeProposal } from '../describe.ts';
+import { pendingProposals, unconfirmedAiClaims } from '../format.ts';
 import { confirmDecision, openLog, requireHuman, say, type Env } from '../human.ts';
 import { acceptWithRisk, guarded, printRisk, proposalRisk, rejectOne } from '../proposal-ops.ts';
 
@@ -65,7 +65,7 @@ async function claimAction(log: EventLog, c: Claim, key: string, tally: Tally): 
 }
 
 async function reviewClaim(env: Env, log: EventLog, c: Claim, tally: Tally): Promise<Verdict> {
-  say(env, '', aiClaimLine(c));
+  say(env, '', describeClaim(c, log.state));
   const key = (await env.io.ask('[c]onfirm [r]etire [s]kip [q]uit: ')).trim().toLowerCase();
   if (key === 'q') return 'quit';
   await guarded(env, c.id, () => claimAction(log, c, key, tally));

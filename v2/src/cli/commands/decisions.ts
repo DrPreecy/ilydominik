@@ -3,7 +3,7 @@ import { newId } from '../../domain/ids.ts';
 import { CLAIM_STATUSES, CLAIM_TYPES, PHASES, type ClaimStatus, type ClaimType, type Phase, type ProjectState } from '../../domain/types.ts';
 import { phaseWarnings } from '../../guidance/warnings.ts';
 import { oneLine, warningLine } from '../format.ts';
-import { isRisky, recordOverride } from '../override.ts';
+import { isRisky, overrideInput } from '../override.ts';
 import { EXIT } from '../io.ts';
 import { CliExit, confirmDecision, fail, openLog, requireClaim, requireHuman, say, splitList, type Env } from '../human.ts';
 
@@ -104,8 +104,12 @@ async function phase(env: Env, phaseArg: string, o: { reason: string; acceptRisk
     throw new CliExit(EXIT.NEEDS_HUMAN);
   }
   await confirmDecision(env);
-  if (o.acceptRisk && warnings.length > 0) await recordOverride(log, to, warnings, o.acceptRisk);
-  await log.append({ type: 'PHASE_CHANGED', actor: HUMAN, payload: { to, reason: o.reason } });
+  const overrides = o.acceptRisk && warnings.length > 0
+    ? [overrideInput(log.state, to, warnings, o.acceptRisk)] : [];
+  await log.appendBatch([
+    ...overrides,
+    { type: 'PHASE_CHANGED', actor: HUMAN, payload: { to, reason: o.reason } },
+  ]);
   say(env, `phase → ${to}`);
   printAffected(env, log.state);
 }

@@ -60,6 +60,16 @@ describe('EventLog', () => {
     assert.equal(await fs.readFile(logFile(), 'utf8'), before);
   });
 
+  it('rejects unsafe session identifiers at the append boundary without changing the log', async () => {
+    const log = await EventLog.init(dir, 'p');
+    const before = await fs.readFile(logFile(), 'utf8');
+    for (const sessionId of ['../../../audit-escape', '..', 'a/b', 'a\\b', 'NUL', 'a:b', 'a'.repeat(129)]) {
+      await assert.rejects(log.append({ type: 'SESSION_STARTED', actor: HUMAN, payload: { sessionId, goal: 'unsafe' } }), errCode('INVALID_EVENT'));
+      await assert.rejects(log.append({ type: 'SESSION_ENDED', actor: HUMAN, payload: { sessionId } }), errCode('INVALID_EVENT'));
+    }
+    assert.equal(await fs.readFile(logFile(), 'utf8'), before);
+  });
+
   it('detects tampering with an existing line (hash chain) but still opens', async () => {
     const log = await EventLog.init(dir, 'p');
     await log.append({ type: 'NOTE_ADDED', actor: HUMAN, payload: { noteId: 'n1', text: 'original' } });
@@ -91,6 +101,175 @@ describe('EventLog', () => {
       final.events.map((e) => e.seq),
       Array.from({ length: 21 }, (_, i) => i),
     );
+  });
+
+  it('a paused live writer keeps its aged lock until append completes', async (t) => {
+    const first = await EventLog.init(dir, 'p');
+    const second = await EventLog.open(dir);
+    const originalAppend = fs.appendFile.bind(fs);
+    let resume!: () => void;
+    let reached!: () => void;
+    const paused = new Promise<void>((resolve) => { reached = resolve; });
+    const gate = new Promise<void>((resolve) => { resume = resolve; });
+    let writes = 0;
+    t.mock.method(fs, 'appendFile', async (...args: Parameters<typeof fs.appendFile>) => {
+      writes += 1;
+      if (writes === 1) {
+        reached();
+        await gate;
+      }
+      return originalAppend(...args);
+    });
+    const pendingFirst = first.append({ type: 'NOTE_ADDED', actor: HUMAN, payload: { noteId: 'first', text: 'first' } });
+    await paused;
+    const lockPath = path.join(dir, CWS_DIR, 'lock');
+    const owner = await fs.readFile(lockPath, 'utf8');
+    const old = new Date(Date.now() - 60_000);
+    await fs.utimes(lockPath, old, old);
+    const pendingSecond = second.append({ type: 'NOTE_ADDED', actor: HUMAN, payload: { noteId: 'second', text: 'second' } });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(writes, 1, 'the second writer must not enter append while the first is paused');
+      assert.equal(await fs.readFile(lockPath, 'utf8'), owner);
+    } finally {
+      resume();
+      await Promise.all([pendingFirst, pendingSecond]);
+    }
+    const reopened = await EventLog.open(dir);
+    assert.deepEqual(reopened.events.map((event) => event.seq), [0, 1, 2]);
+    assert.equal(reopened.integrity.ok, true);
+  });
+
+  it('competing writers safely recover a dead owner without deleting a successor lock', async (t) => {
+    await EventLog.init(dir, 'p');
+    const deadPid = 999999;
+    const originalKill = process.kill.bind(process);
+    t.mock.method(process, 'kill', (pid: number, signal?: Parameters<typeof process.kill>[1]) => {
+      if (pid === deadPid) throw Object.assign(new Error('dead owner'), { code: 'ESRCH' });
+      return originalKill(pid, signal);
+    });
+    await fs.writeFile(path.join(dir, CWS_DIR, 'lock'), JSON.stringify({ pid: deadPid, nonce: 'dead' }));
+    const handles = await Promise.all(Array.from({ length: 12 }, () => EventLog.open(dir)));
+    await Promise.all(handles.map((log, index) => log.append({
+      type: 'NOTE_ADDED', actor: HUMAN, payload: { noteId: `recovered-${index}`, text: 'recovered' },
+    })));
+    const reopened = await EventLog.open(dir);
+    assert.equal(reopened.state.notes.length, handles.length);
+    assert.deepEqual(reopened.events.map((event) => event.seq), Array.from({ length: 13 }, (_, index) => index));
+    assert.equal(reopened.integrity.ok, true);
+  });
+
+  it('abandoned recovery markers fail promptly with safe manual recovery guidance for two contenders', async (t) => {
+    const first = await EventLog.init(dir, 'p');
+    const second = await EventLog.open(dir);
+    const lockPath = path.join(dir, CWS_DIR, 'lock');
+    const recoveryPath = `${lockPath}.recovery`;
+    const deadOwner = JSON.stringify({ pid: 999999, nonce: 'dead' });
+    const before = await fs.readFile(logFile(), 'utf8');
+    const originalKill = process.kill.bind(process);
+    t.mock.method(process, 'kill', (pid: number, signal?: Parameters<typeof process.kill>[1]) => {
+      if (pid === 999999) throw Object.assign(new Error('dead owner'), { code: 'ESRCH' });
+      return originalKill(pid, signal);
+    });
+    const originalNow = Date.now();
+    let ticks = 0;
+    t.mock.method(Date, 'now', () => originalNow + ticks++ * 1000);
+    for (const marker of [null, deadOwner, 'incomplete owner']) {
+      await fs.writeFile(lockPath, deadOwner);
+      if (marker === null) await fs.mkdir(recoveryPath);
+      else await fs.writeFile(recoveryPath, marker);
+      ticks = 0;
+      await Promise.all([first, second].map((log, index) => assert.rejects(log.append({
+        type: 'NOTE_ADDED', actor: HUMAN, payload: { noteId: `blocked-${index}`, text: 'blocked' },
+      }), (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.ok(error.message.includes(`recovery blocked at ${recoveryPath}`));
+        assert.ok(error.message.includes('Stop all CWS writers'));
+        assert.ok(error.message.includes('verify no writer or recovery process is running'));
+        assert.ok(error.message.includes('remove only the recovery marker'));
+        assert.ok(error.message.includes('Do not delete the lock or event log'));
+        return true;
+      })));
+      assert.ok(ticks <= 4, 'both contenders must fail before retrying to the lock deadline');
+      assert.equal(await fs.readFile(lockPath, 'utf8'), deadOwner);
+      assert.equal(await fs.readFile(logFile(), 'utf8'), before);
+      if (marker === null) assert.deepEqual(await fs.readdir(recoveryPath), []);
+      else assert.equal(await fs.readFile(recoveryPath, 'utf8'), marker);
+      await fs.rm(recoveryPath, { recursive: true });
+    }
+    await first.append({ type: 'NOTE_ADDED', actor: HUMAN, payload: { noteId: 'after-manual-recovery', text: 'recovered' } });
+    const reopened = await EventLog.open(dir);
+    assert.deepEqual(reopened.events.map((event) => event.seq), [0, 1]);
+    assert.equal(reopened.integrity.ok, true);
+  });
+
+  it('a contender waits for a live recovery owner without replacing its marker or lock', async (t) => {
+    const first = await EventLog.init(dir, 'p');
+    const second = await EventLog.open(dir);
+    const lockPath = path.join(dir, CWS_DIR, 'lock');
+    const recoveryPath = `${lockPath}.recovery`;
+    const deadOwner = JSON.stringify({ pid: 999999, nonce: 'dead' });
+    const originalKill = process.kill.bind(process);
+    t.mock.method(process, 'kill', (pid: number, signal?: Parameters<typeof process.kill>[1]) => {
+      if (pid === 999999) throw Object.assign(new Error('dead owner'), { code: 'ESRCH' });
+      return originalKill(pid, signal);
+    });
+    await fs.writeFile(lockPath, deadOwner);
+    const originalUnlink = fs.unlink.bind(fs);
+    let resume!: () => void;
+    let reached!: () => void;
+    const paused = new Promise<void>((resolve) => { reached = resolve; });
+    const gate = new Promise<void>((resolve) => { resume = resolve; });
+    t.mock.method(fs, 'unlink', async (file: Parameters<typeof fs.unlink>[0]) => {
+      if (file === lockPath) {
+        reached();
+        await gate;
+      }
+      return originalUnlink(file);
+    });
+    const pendingFirst = first.append({ type: 'NOTE_ADDED', actor: HUMAN, payload: { noteId: 'recovery-first', text: 'first' } });
+    try {
+      await paused;
+      const marker = await fs.readFile(recoveryPath, 'utf8');
+      assert.equal(JSON.parse(marker).pid, process.pid);
+      const pendingSecond = second.append({ type: 'NOTE_ADDED', actor: HUMAN, payload: { noteId: 'recovery-second', text: 'second' } });
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        assert.equal(await fs.readFile(recoveryPath, 'utf8'), marker);
+        assert.equal(await fs.readFile(lockPath, 'utf8'), deadOwner);
+        assert.equal((await EventLog.open(dir)).events.length, 1);
+      } finally {
+        resume();
+        await pendingSecond;
+      }
+    } finally {
+      resume();
+      await pendingFirst;
+    }
+    const reopened = await EventLog.open(dir);
+    assert.deepEqual(reopened.events.map((event) => event.seq), [0, 1, 2]);
+    assert.equal(reopened.integrity.ok, true);
+    await assert.rejects(fs.stat(recoveryPath), { code: 'ENOENT' });
+  });
+
+  it('fails closed for legacy or unverifiable lock owners rather than evicting them', async (t) => {
+    const log = await EventLog.init(dir, 'p');
+    const lockPath = path.join(dir, CWS_DIR, 'lock');
+    const before = await fs.readFile(logFile(), 'utf8');
+    const originalNow = Date.now();
+    let tick = 0;
+    t.mock.method(Date, 'now', () => originalNow + tick++ * 1000);
+    const originalKill = process.kill.bind(process);
+    t.mock.method(process, 'kill', (pid: number, signal?: Parameters<typeof process.kill>[1]) => {
+      if (pid === 999999) throw Object.assign(new Error('owner inaccessible'), { code: 'EPERM' });
+      return originalKill(pid, signal);
+    });
+    for (const owner of ['legacy nonce', JSON.stringify({ pid: 999999, nonce: 'unverifiable' })]) {
+      await fs.writeFile(lockPath, owner);
+      await assert.rejects(log.append({ type: 'NOTE_ADDED', actor: HUMAN, payload: { noteId: 'blocked', text: 'blocked' } }), /timed out waiting for lock/);
+      assert.equal(await fs.readFile(lockPath, 'utf8'), owner);
+      assert.equal(await fs.readFile(logFile(), 'utf8'), before);
+    }
   });
 
   it('findProjectRoot walks up from a nested folder', async () => {

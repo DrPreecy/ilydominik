@@ -1,4 +1,5 @@
 import { AI_ALLOWED_CLAIM_TYPES, DomainError, HUMAN_ONLY_EVENTS, PHASES } from './types.ts';
+import { CLAIM_TYPE_STATUSES } from './types.ts';
 import type {
   Actor,
   Claim,
@@ -135,6 +136,33 @@ function assertPreconditions(state: ProjectState | null, e: CwsEvent): void {
 // ---------------------------------------------------------------------------
 // Entity builders and state transforms
 // ---------------------------------------------------------------------------
+
+function assertClaimStatus(type: Claim['type'], status: Claim['status'], answer?: string): void {
+  if (!CLAIM_TYPE_STATUSES[type].includes(status)) {
+    throw new DomainError('INVALID_EVENT', `${status} is not a status for ${type}`);
+  }
+  if (status === 'ANSWERED' && !answer?.trim()) {
+    throw new DomainError('INVALID_EVENT', 'ANSWERED requires a nonblank answer');
+  }
+}
+
+function assertStatusEvent(state: ProjectState, event: CwsEvent): void {
+  const check = (item: StatusChange): void => {
+    const claim = state.claims.find((entry) => entry.id === item.claimId);
+    if (!claim) throw new DomainError('NOT_FOUND', `claim "${item.claimId}" not found`);
+    assertClaimStatus(claim.type, item.status, item.answer);
+  };
+  if (event.type === 'CLAIM_STATUS_CHANGED') check(event.payload);
+  if (event.type === 'CLAIM_CONFIRMED') {
+    const claim = state.claims.find((entry) => entry.id === event.payload.claimId)!;
+    assertClaimStatus(event.payload.asType ?? claim.type, claim.status, claim.answer);
+  }
+  if (event.type === 'PROPOSAL_SUBMITTED' && event.payload.item.kind === 'status') check(event.payload.item);
+  if (event.type === 'PROPOSAL_ACCEPTED') {
+    const item = pendingProposal(state, event.payload.proposalId).item;
+    if (item.kind === 'status') check(item);
+  }
+}
 
 function mapClaim(s: ProjectState, claimId: string, fn: (c: Claim) => Claim): ProjectState {
   return { ...s, claims: s.claims.map((c) => (c.id === claimId ? fn(c) : c)) };
@@ -332,6 +360,7 @@ export function reduce(state: ProjectState | null, event: CwsEvent): ProjectStat
   assertPreconditions(state, event);
   if (!state) return createProject(event as Of<'PROJECT_CREATED'>);
   assertReferences(state, event);
+  assertStatusEvent(state, event);
   return { ...applyEvent(state, event), lastSeq: event.seq };
 }
 

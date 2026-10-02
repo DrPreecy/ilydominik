@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --dir v2 install --frozen-lockfile
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+      - run: npm run coverage
+      - run: npm run legacy:typecheck
+      - run: npm run legacy:build
+      - run: npm run legacy:test

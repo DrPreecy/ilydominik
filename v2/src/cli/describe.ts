@@ -1,4 +1,4 @@
-import type { Proposal, ProjectState } from '../domain/types.ts';
+import type { Claim, Proposal, ProjectState } from '../domain/types.ts';
 import { actorLabel, sanitize } from './format.ts';
 
 const PAD = '      ';
@@ -54,4 +54,29 @@ export function describeProposal(p: Proposal, state: ProjectState): string {
   const head = `${sanitize(p.id)} [${p.item.kind}] by ${actorLabel(p.actor)}`;
   const why = p.rationale ? [field('proposal rationale', p.rationale)] : [];
   return [head, ...itemFields(p, state), ...why].join('\n');
+}
+
+export function describeClaim(claim: Claim, state: ProjectState): string {
+  return [
+    `${sanitize(claim.id)} [${claim.type}] by ${actorLabel(claim.createdBy)}`,
+    field('role', claim.createdBy.kind === 'ai' ? claim.createdBy.role ?? '(none)' : 'human'),
+    field('status', claim.status),
+    field('risk', claim.risk ?? '(none)'),
+    field('confirmed', String(claim.confirmed)),
+    field('phase', claim.phase),
+    field('session', claim.sessionId ?? '(none)'),
+    field('created at', claim.at),
+    field('updated at', claim.updatedAt),
+    '    text:',
+    sanitize(claim.text, true),
+    ...(claim.answer ? [field('answer', claim.answer)] : []),
+    ...claim.derivedFrom.map((id) => field(`derived from ${id}`, linkedText(state, id))),
+    ...claim.evidence.flatMap((evidence) => [
+      field(`evidence ${evidence.id}`, evidence.text),
+      field('source', evidence.source ?? '(none)'),
+      field('evidence actor', actorLabel(evidence.actor)),
+      field('evidence role', evidence.actor.kind === 'ai' ? evidence.actor.role ?? '(none)' : 'human'),
+      field('evidence at', evidence.at),
+    ]),
+  ].join('\n');
 }

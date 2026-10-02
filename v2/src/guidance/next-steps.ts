@@ -2,8 +2,6 @@ import type { NextStep, ProjectState } from '../domain/types.ts';
 import { RULES } from './rules.ts';
 import { assess } from './warnings.ts';
 
-const GUARANTEED_RULES = ['phase-default', 'empty-project'];
-
 export function nextSteps(state: ProjectState, limit = 3): NextStep[] {
   const warnings = assess(state);
   const hits: NextStep[] = [];
@@ -13,9 +11,5 @@ export function nextSteps(state: ProjectState, limit = 3): NextStep[] {
     hits.push({ ruleId: rule.id, purpose: hit.purpose ?? rule.purpose, title: hit.title, reason: hit.reason, refs: hit.refs, priority: hit.priority ?? rule.priority });
   }
   const sorted = [...hits].sort((a, b) => b.priority - a.priority);
-  const top = sorted.slice(0, limit);
-  const guaranteed = sorted.find((s) => GUARANTEED_RULES.includes(s.ruleId));
-  // With a single slot the top-ranked step wins, so `status` and `cws prompt 1` always agree.
-  if (limit < 2 || !guaranteed || top.includes(guaranteed) || top.length === 0) return top;
-  return [...top.slice(0, -1), guaranteed];
+  return sorted.slice(0, limit);
 }

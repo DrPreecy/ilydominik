@@ -46,6 +46,15 @@ export const AI_ALLOWED_CLAIM_TYPES: readonly ClaimType[] = ['INTERPRETATION', '
 export const CLAIM_STATUSES = ['OPEN', 'TESTING', 'SUPPORTED', 'FALSIFIED', 'ANSWERED', 'RETIRED'] as const;
 export type ClaimStatus = (typeof CLAIM_STATUSES)[number];
 
+export const CLAIM_TYPE_STATUSES: Readonly<Record<ClaimType, readonly ClaimStatus[]>> = {
+  USER_STATEMENT: ['OPEN', 'RETIRED'],
+  FACT: ['OPEN', 'RETIRED'],
+  INTERPRETATION: ['OPEN', 'RETIRED'],
+  ASSUMPTION: ['OPEN', 'TESTING', 'SUPPORTED', 'FALSIFIED', 'RETIRED'],
+  HYPOTHESIS: ['OPEN', 'TESTING', 'SUPPORTED', 'FALSIFIED', 'RETIRED'],
+  UNKNOWN: ['OPEN', 'TESTING', 'ANSWERED', 'RETIRED'],
+};
+
 export const RISKS = ['LOW', 'MEDIUM', 'HIGH', 'FATAL'] as const;
 export type Risk = (typeof RISKS)[number];
 

@@ -1,5 +1,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { mock } from 'node:test';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -107,6 +109,84 @@ describe('cli: init / dump / session / status', () => {
     assert.match(handoff, /Clarify soil/);
     assert.match(handoff, /pH value\?/);
     assert.match(handoff, /Next/i);
+  });
+
+  it('session end rejects an unsafe legacy identifier before recording completion or writing outside the project', async () => {
+    const root = path.join(dir, 'project');
+    await fs.mkdir(root);
+    const log = await EventLog.init(root, 'p');
+    await log.append({ type: 'SESSION_STARTED', actor: { kind: 'human' }, payload: { sessionId: 'safe', goal: 'legacy' } });
+    const file = path.join(root, '.cws', 'events.jsonl');
+    const started = log.events.at(-1)!;
+    const payload = { sessionId: '../../../audit-escape', goal: 'legacy' };
+    const canonical = { v: started.v, seq: started.seq, id: started.id, at: started.at,
+      type: started.type, actor: started.actor, payload, prevHash: started.prevHash };
+    const unsafe = { ...started, payload, hash: createHash('sha256').update(started.prevHash + JSON.stringify(canonical)).digest('hex') };
+    const raw = `${JSON.stringify(log.events[0])}\n${JSON.stringify(unsafe)}\n`;
+    await fs.writeFile(file, raw);
+    const io = human();
+    io.cwd = root;
+    assert.equal(await cli(io, 'session', 'end'), EXIT.ERROR);
+    assert.match(errText(io), /session.*identifier/i);
+    assert.equal(await fs.readFile(file, 'utf8'), raw);
+    await assert.rejects(fs.access(path.join(dir, 'audit-escape.md')), { code: 'ENOENT' });
+    assert.doesNotMatch(text(io), /Session ended:/);
+  });
+
+  it('session handoff can be retried after an obstructed directory without another end event', async () => {
+    await initProject();
+    await cli(human(), 'session', 'start', 'Retry export');
+    const sessions = path.join(dir, '.cws', 'sessions');
+    await fs.writeFile(sessions, 'obstruction');
+    const failed = human();
+    assert.equal(await cli(failed, 'session', 'end', '--summary', 'persisted summary'), EXIT.ERROR);
+    assert.doesNotMatch(text(failed), /Session ended:|Handoff written:/);
+    assert.ok((await state()).activeSessionId, 'preflight failure must not record completion');
+    await fs.unlink(sessions);
+    const retry = human();
+    assert.equal(await cli(retry, 'session', 'end', '--summary', 'persisted summary'), EXIT.OK);
+    const log = await EventLog.open(dir);
+    assert.equal(log.events.filter((event) => event.type === 'SESSION_ENDED').length, 1);
+    assert.equal(log.state.activeSessionId, undefined);
+    assert.match(await fs.readFile(path.join(sessions, `${log.state.sessions[0]!.id}.md`), 'utf8'), /persisted summary/);
+    assert.match(text(retry), /Handoff written:/);
+  });
+
+  it('session handoff retries a failure after the end event using its recorded summary', async (t) => {
+    await initProject();
+    await cli(human(), 'session', 'start', 'Retry late export');
+    const originalRename = fs.rename.bind(fs);
+    t.mock.method(fs, 'rename', async (...args: Parameters<typeof fs.rename>) => {
+      if (String(args[1]).endsWith('.md')) throw Object.assign(new Error('blocked export'), { code: 'EACCES' });
+      return originalRename(...args);
+    });
+    const failed = human();
+    assert.equal(await cli(failed, 'session', 'end', '--summary', 'recorded summary'), EXIT.ERROR);
+    assert.equal((await state()).activeSessionId, undefined);
+    assert.doesNotMatch(text(failed), /Session ended:|Handoff written:/);
+    assert.deepEqual(await fs.readdir(path.join(dir, '.cws', 'sessions')), []);
+    t.mock.restoreAll();
+    const retry = human();
+    assert.equal(await cli(retry, 'session', 'end'), EXIT.OK);
+    const log = await EventLog.open(dir);
+    assert.equal(log.events.filter((event) => event.type === 'SESSION_ENDED').length, 1);
+    assert.match(await fs.readFile(path.join(dir, '.cws', 'sessions', `${log.state.sessions[0]!.id}.md`), 'utf8'), /recorded summary/);
+  });
+
+  it('session end refuses an external sessions junction before appending completion', async () => {
+    const root = path.join(dir, 'project');
+    const outside = path.join(dir, 'outside');
+    await fs.mkdir(root);
+    await fs.mkdir(outside);
+    const log = await EventLog.init(root, 'p');
+    await log.append({ type: 'SESSION_STARTED', actor: { kind: 'human' }, payload: { sessionId: 'safe', goal: 'linked export' } });
+    await fs.symlink(outside, path.join(root, '.cws', 'sessions'), 'junction');
+    const io = human();
+    io.cwd = root;
+    assert.equal(await cli(io, 'session', 'end'), EXIT.ERROR);
+    assert.equal((await EventLog.open(root)).state.activeSessionId, 'safe');
+    assert.deepEqual(await fs.readdir(outside), []);
+    assert.doesNotMatch(text(io), /Session ended:|Handoff written:/);
   });
 
   it('status shows title, phase, warnings and the top next step', async () => {
@@ -314,6 +394,124 @@ describe('cli: next / prompt / context / log / verify', () => {
   it('unknown command → error with usage', async () => {
     const io = human();
     assert.equal(await cli(io, 'frobnicate'), EXIT.ERROR);
+  });
+});
+
+describe('cli: safe-run guard', () => {
+  it('checks ordinary commands without executing them', async () => {
+    const io = mkAgent();
+    assert.equal(await cli(io, 'safe-run', '--check', '--', 'npm', 'test'), EXIT.OK);
+    assert.match(text(io), /allowed command/);
+  });
+
+  it('checks project-contained deletes without executing them', async () => {
+    const io = mkAgent();
+    assert.equal(await cli(io, 'safe-run', '--check', '--', 'rm', '-rf', 'dist'), EXIT.OK);
+    assert.match(text(io), /allowed destructive command/);
+    assert.match(text(io), /dist/);
+  });
+
+  it('blocks dangerous deletes outside the current project boundary', async () => {
+    const io = mkAgent();
+    const outside = path.dirname(dir);
+    assert.equal(await cli(io, 'safe-run', '--check', '--', 'rm', '-rf', outside), EXIT.ERROR);
+    assert.match(errText(io), /blocked:/);
+  });
+});
+
+describe('cli: owned fix regressions', () => {
+  for (const command of ['accept', 'review']) {
+    it(`records a linked risk override with successful ${command} acceptance`, async () => {
+      await initProject();
+      await cli(human(), 'claim', 'add', '--type', 'ASSUMPTION', '--text', 'critical premise', '--risk', 'FATAL');
+      await cli(mkAgent(JSON.stringify({ item: { kind: 'phase', to: 'IMPLEMENTATION', reason: 'deadline' } })), 'propose', '--agent', 'copilot', '--json', '-');
+      const before = await state();
+      const proposalId = before.proposals[0]!.id;
+      const io = human(command === 'review' ? ['K7Q', 'a', 'test later'] : ['K7Q']);
+      const args = command === 'review' ? ['review'] : ['accept', proposalId, '--accept-risk', 'test later'];
+      assert.equal(await cli(io, ...args), EXIT.OK);
+      const log = await EventLog.open(dir);
+      assert.deepEqual(log.events.slice(-2).map((event) => event.type), ['DECISION_RECORDED', 'PROPOSAL_ACCEPTED']);
+      assert.equal(log.state.phase, 'IMPLEMENTATION');
+      assert.equal(log.state.proposals[0]!.status, 'ACCEPTED');
+      assert.equal(log.state.decisions[0]!.kind, 'PROCEED_UNDER_UNCERTAINTY');
+      assert.equal(log.state.decisions[0]!.rationale, 'test later');
+      assert.deepEqual(log.state.decisions[0]!.links, [before.claims[0]!.id]);
+      assert.equal(await cli(human(), 'verify'), EXIT.OK);
+    });
+  }
+
+  it('keeps risk acknowledgement atomic with phase, acceptance and review on failure', async () => {
+    await initProject();
+    await cli(human(), 'claim', 'add', '--type', 'ASSUMPTION', '--text', 'critical premise', '--risk', 'FATAL');
+    await cli(mkAgent(JSON.stringify({ item: { kind: 'phase', to: 'IMPLEMENTATION', reason: 'deadline' } })), 'propose', '--agent', 'copilot', '--json', '-');
+    const before = await state();
+    const original = EventLog.prototype.appendBatch;
+    const stub = mock.method(EventLog.prototype, 'appendBatch', async function (this: EventLog, inputs: Parameters<typeof original>[0]) {
+      if (inputs.some((input) => input.type === 'PHASE_CHANGED' || input.type === 'PROPOSAL_ACCEPTED')) throw new Error('injected transaction failure');
+      return original.call(this, inputs);
+    });
+    try {
+      for (const [args, answers] of [
+        [['phase', 'IMPLEMENTATION', '--reason', 'deadline', '--accept-risk', 'test later'], ['K7Q']],
+        [['accept', before.proposals[0]!.id, '--accept-risk', 'test later'], ['K7Q']],
+        [['review'], ['K7Q', 'a', 'test later']],
+      ] as [string[], string[]][]) {
+        assert.equal(await cli(human(answers), ...args), EXIT.ERROR);
+        assert.deepEqual(await state(), before, args.join(' '));
+      }
+    } finally {
+      stub.mock.restore();
+    }
+  });
+
+  it('shows the full claim and provenance before confirming in review', async () => {
+    await initProject();
+    await cli(human(), 'session', 'start', 'inspect claim');
+    const fullText = 'visible prefix '.repeat(20) + '\nHIDDEN SUFFIX THAT MUST BE REVIEWED';
+    await cli(mkAgent(), 'claim', 'add', '--agent', 'copilot', '--role', 'analyst', '--type', 'ASSUMPTION', '--text', fullText, '--risk', 'FATAL');
+    const claim = (await state()).claims[0]!;
+    await cli(mkAgent(), 'evidence', 'add', '--agent', 'copilot', '--claim', claim.id, '--text', 'FULL CLAIM EVIDENCE', '--source', 'REVIEW SOURCE');
+    const io = human(['K7Q', 'c']);
+    const ask = io.ask;
+    io.ask = async (question) => {
+      if (question.startsWith('[c]onfirm')) {
+        assert.ok(text(io).includes(fullText));
+        for (const value of ['copilot', 'analyst', 'FATAL', 'FULL CLAIM EVIDENCE', 'REVIEW SOURCE', claim.sessionId!, claim.at]) assert.ok(text(io).includes(value), value);
+      }
+      return ask(question);
+    };
+    assert.equal(await cli(io, 'review'), EXIT.OK);
+    assert.equal((await state()).claims[0]!.confirmed, true);
+  });
+
+  it('sanitizes generic errors, thrown values and Commander output', async () => {
+    await initProject();
+    const unsafe = 'bad\u001b[2J\u0007\u009bmessage';
+    for (const failure of [new Error(unsafe), unsafe]) {
+      const io = mkAgent();
+      io.readStdin = async () => { throw failure; };
+      assert.equal(await cli(io, 'dump', '--agent', 'copilot', '-'), EXIT.ERROR);
+      assert.doesNotMatch(errText(io), /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
+      assert.match(errText(io), /message/);
+    }
+    for (const args of [[unsafe], ['--' + unsafe], ['claim', unsafe]]) {
+      const io = human();
+      assert.equal(await cli(io, ...args), EXIT.ERROR);
+      assert.doesNotMatch(text(io) + errText(io), /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
+    }
+  });
+
+  it('prompt 2 corresponds to next --limit 2', async () => {
+    await initProject();
+    await cli(human(), 'claim', 'add', '--type', 'ASSUMPTION', '--text', 'critical premise', '--risk', 'FATAL');
+    await cli(mkAgent(JSON.stringify({ item: { kind: 'claim', type: 'FACT', text: 'pending' } })), 'propose', '--agent', 'copilot', '--json', '-');
+    const next = human();
+    assert.equal(await cli(next, 'next', '--limit', '2'), EXIT.OK);
+    assert.match(text(next), /2\. \[proof\]/);
+    const prompt = human();
+    assert.equal(await cli(prompt, 'prompt', '2'), EXIT.OK);
+    assert.match(text(prompt), /Reality Tester/);
   });
 });
 

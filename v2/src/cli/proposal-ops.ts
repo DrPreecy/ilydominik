@@ -3,7 +3,7 @@ import { DomainError, type Proposal, type Warning } from '../domain/types.ts';
 import type { EventLog } from '../store/event-log.ts';
 import { warningLine } from './format.ts';
 import { say, warn, type Env } from './human.ts';
-import { recordOverride, riskyPhaseWarnings } from './override.ts';
+import { overrideInput, riskyPhaseWarnings } from './override.ts';
 
 const HUMAN = { kind: 'human' } as const;
 
@@ -35,8 +35,14 @@ export function proposalRisk(log: EventLog, p: Proposal): Warning[] {
 
 /** Record the override (when risky) and accept. */
 export async function acceptWithRisk(log: EventLog, p: Proposal, warnings: Warning[], why?: string): Promise<string> {
-  if (warnings.length > 0 && why && p.item.kind === 'phase') await recordOverride(log, p.item.to, warnings, why);
-  return acceptOne(log, p);
+  const resultId = resultIdFor(p);
+  const overrides = warnings.length > 0 && why && p.item.kind === 'phase'
+    ? [overrideInput(log.state, p.item.to, warnings, why)] : [];
+  await log.appendBatch([
+    ...overrides,
+    { type: 'PROPOSAL_ACCEPTED', actor: HUMAN, payload: { proposalId: p.id, resultId } },
+  ]);
+  return resultId;
 }
 
 /** Run one step; a domain error is reported and swallowed so the caller's loop continues. */

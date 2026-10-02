@@ -1,7 +1,6 @@
 import { newId } from '../domain/ids.ts';
-import type { Phase, ProjectState, Warning } from '../domain/types.ts';
+import type { EventInput, Phase, ProjectState, Warning } from '../domain/types.ts';
 import { phaseWarnings } from '../guidance/warnings.ts';
-import type { EventLog } from '../store/event-log.ts';
 
 const HUMAN = { kind: 'human' } as const;
 
@@ -13,11 +12,11 @@ export function riskyPhaseWarnings(state: ProjectState, to: Phase): Warning[] {
   return warnings.some(isRisky) ? warnings : [];
 }
 
-/** Record the monitored "proceed under uncertainty" decision that backs a risky phase change. */
-export async function recordOverride(log: EventLog, to: Phase, warnings: Warning[], why: string): Promise<void> {
-  const known = new Set(log.state.claims.map((c) => c.id));
+/** Build the monitored decision for the same batch as the operation it authorizes. */
+export function overrideInput(state: ProjectState, to: Phase, warnings: Warning[], why: string): EventInput {
+  const known = new Set(state.claims.map((c) => c.id));
   const links = [...new Set(warnings.flatMap((w) => w.refs).filter((r) => known.has(r)))];
-  await log.append({
+  return {
     type: 'DECISION_RECORDED',
     actor: HUMAN,
     payload: {
@@ -29,5 +28,5 @@ export async function recordOverride(log: EventLog, to: Phase, warnings: Warning
       links,
       kind: 'PROCEED_UNDER_UNCERTAINTY',
     },
-  });
+  };
 }

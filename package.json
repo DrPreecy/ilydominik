@@ -5,9 +5,14 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
-    "test": "node --test --import tsx tests/**/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "build": "npm --prefix v2 run build",
+    "test": "npm --prefix v2 test && node --test tests/entrypoint.test.mjs",
+    "typecheck": "npm --prefix v2 run typecheck",
+    "coverage": "npm --prefix v2 run coverage",
+    "cws": "node --import tsx v2/src/cli/main.ts",
+    "legacy:build": "tsc",
+    "legacy:test": "node --test --import tsx \"tests/**/*.test.ts\"",
+    "legacy:typecheck": "tsc --noEmit"
   },
   "keywords": [
     "cognitive-architecture",

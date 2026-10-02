@@ -29,6 +29,9 @@ export function agentsBlock(purposes: readonly PurposeInfo[]): string {
     '   Propose them instead: `cws propose --agent <your-name> --json -` (the human reviews with `cws review`).',
     '   Never run human commands (decide, accept, confirm, mark, phase, review, session); suggest them to the user.',
     '5. When the user shares raw thoughts, save them verbatim with `cws dump --agent <your-name>`.',
+    '6. Before any delete, cleanup, reset, or other destructive shell/file operation, run `cws safe-run --check -- <command...>`.',
+    '   When performing the operation, prefer `cws safe-run -- <command...>` over raw shell commands.',
+    '   Do not run raw recursive deletes, shell chains, drive/root paths, wildcard deletes, or paths outside this project.',
     BLOCK_END,
   ].join('\n');
 }

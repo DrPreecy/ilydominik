@@ -14,7 +14,6 @@ const LOCK_FILE = 'lock';
 const GENESIS_HASH = '0'.repeat(64);
 const LOCK_RETRY_MS = 15;
 const LOCK_TIMEOUT_MS = 8000;
-const LOCK_STALE_MS = 5000;
 
 export interface Integrity {
   ok: boolean;
@@ -22,6 +21,12 @@ export interface Integrity {
 }
 
 type EventBody = Omit<CwsEvent, 'hash'>;
+
+export function assertSessionId(sessionId: string): void {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(sessionId) || /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(sessionId)) {
+    throw new DomainError('INVALID_EVENT', 'session identifier must be filename-safe (letters, digits, underscores or hyphens, at most 128 characters)');
+  }
+}
 
 export function findProjectRoot(startDir: string): string | null {
   let dir = path.resolve(startDir);
@@ -83,34 +88,82 @@ function isErrno(err: unknown, code: string): boolean {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function isStale(lockPath: string): Promise<boolean> {
+function ownerStatus(raw: string): 'dead' | 'live' | 'unverifiable' {
+  let owner: unknown;
   try {
-    const { mtimeMs } = await fs.stat(lockPath);
-    return Date.now() - mtimeMs > LOCK_STALE_MS;
+    owner = JSON.parse(raw);
+  } catch {
+    return 'unverifiable';
+  }
+  if (typeof owner !== 'object' || owner === null || !('pid' in owner) ||
+      typeof owner.pid !== 'number' || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) return 'unverifiable';
+  try {
+    process.kill(owner.pid, 0);
+    return 'live';
   } catch (err) {
-    if (isErrno(err, 'ENOENT')) return false;
+    if (isErrno(err, 'ESRCH')) return 'dead';
+    if (isErrno(err, 'EPERM')) return 'unverifiable';
     throw err;
   }
 }
 
-/** Atomically replace a stale lock with a fresh one carrying our nonce. */
-async function takeOver(lockPath: string, nonce: string): Promise<boolean> {
-  const tmp = `${lockPath}.${nonce}`;
-  await fs.writeFile(tmp, nonce);
+function recoveryBlocked(recoveryPath: string): Error {
+  return new Error(`recovery blocked at ${recoveryPath}: recovery ownership is dead or unverifiable. ` +
+    'Stop all CWS writers and prevent new writers from starting; verify no writer or recovery process is running. ' +
+    'Then remove only the recovery marker at the path above (an empty legacy directory or owner file) and retry. ' +
+    'Do not delete the lock or event log. Never remove this marker while writers may be running.');
+}
+
+async function acquireRecovery(recoveryPath: string, owner: string): Promise<boolean> {
+  const preparedPath = `${recoveryPath}.${randomBytes(12).toString('hex')}.tmp`;
+  await fs.writeFile(preparedPath, owner, { flag: 'wx' });
   try {
-    await fs.rename(tmp, lockPath);
-  } catch (err) {
-    await fs.rm(tmp, { force: true });
-    if (isErrno(err, 'EPERM') || isErrno(err, 'EBUSY') || isErrno(err, 'EACCES')) return false;
-    throw err;
+    try {
+      await fs.link(preparedPath, recoveryPath);
+      return true;
+    } catch (err) {
+      if (!isErrno(err, 'EEXIST')) throw err;
+    }
+    try {
+      const current = await fs.readFile(recoveryPath, 'utf8');
+      if (ownerStatus(current) === 'live') return false;
+      throw recoveryBlocked(recoveryPath);
+    } catch (err) {
+      if (isErrno(err, 'ENOENT')) return false;
+      if (isErrno(err, 'EISDIR')) throw recoveryBlocked(recoveryPath);
+      throw err;
+    }
+  } finally {
+    await fs.unlink(preparedPath);
   }
-  return (await fs.readFile(lockPath, 'utf8').catch(() => '')) === nonce;
+}
+
+async function takeOver(lockPath: string, owner: string): Promise<boolean> {
+  const recoveryPath = `${lockPath}.recovery`;
+  if (!await acquireRecovery(recoveryPath, owner)) return false;
+  try {
+    const current = await fs.readFile(lockPath, 'utf8');
+    if (ownerStatus(current) !== 'dead') return false;
+    await fs.unlink(lockPath);
+    try {
+      await fs.writeFile(lockPath, owner, { flag: 'wx' });
+      return true;
+    } catch (err) {
+      if (isErrno(err, 'EEXIST')) return false;
+      throw err;
+    }
+  } catch (err) {
+    if (isErrno(err, 'ENOENT')) return false;
+    throw err;
+  } finally {
+    await fs.unlink(recoveryPath);
+  }
 }
 
 /** Acquire the lock; returns the nonce that proves ownership. */
 async function acquireLock(lockPath: string): Promise<string> {
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
-  const nonce = randomBytes(12).toString('hex');
+  const nonce = JSON.stringify({ pid: process.pid, nonce: randomBytes(12).toString('hex') });
   for (;;) {
     try {
       await fs.writeFile(lockPath, nonce, { flag: 'wx' });
@@ -119,7 +172,7 @@ async function acquireLock(lockPath: string): Promise<string> {
       if (!isErrno(err, 'EEXIST') && !isErrno(err, 'EPERM') && !isErrno(err, 'EBUSY')) throw err;
     }
     if (Date.now() > deadline) throw new Error(`timed out waiting for lock ${lockPath}`);
-    if ((await isStale(lockPath)) && (await takeOver(lockPath, nonce))) return nonce;
+    if (await takeOver(lockPath, nonce)) return nonce;
     await sleep(LOCK_RETRY_MS);
   }
 }
@@ -193,6 +246,9 @@ export class EventLog {
   /** All-or-nothing: every input is folded against the state in memory first, then written in one append. */
   async appendBatch(inputs: readonly EventInput[]): Promise<CwsEvent[]> {
     const parsed = inputs.map((i) => parseEventInput(i));
+    for (const input of parsed) {
+      if (input.type === 'SESSION_STARTED' || input.type === 'SESSION_ENDED') assertSessionId(input.payload.sessionId);
+    }
     const lockPath = path.join(this.rootDir, CWS_DIR, LOCK_FILE);
     const nonce = await acquireLock(lockPath);
     try {

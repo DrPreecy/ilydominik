@@ -1,6 +1,6 @@
 # ADR 0001 — Rebuild as v2 instead of patching v1
 
-- Status: accepted (2026-10-02, by Dominik)
+- Status: accepted (2026-10-02, by Marlon)
 - Context: A review of v1 (`.claude/plan/cws-v2.md`, Part A) found 14 issues, 3 of them critical. Every one of the 12 adversarial probes got through. The root cause was conceptual, not local: v1 aimed "deterministic circuit breakers" at the human, which contradicts constitution §24. It also had no way to be driven (no CLI or I/O), no sessions, no raw capture, and no history.
 - Options: (a) patch v1; (b) rewrite in place; (c) build v2 side by side.
 - Decision: (c), side by side in `v2/`. v1 stays untouched for comparison.

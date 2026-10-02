@@ -26,10 +26,17 @@ env/
 
 # Environment & Secrets
 .env
+.env.*
+!.env.example
+!.env.*.example
+.envrc
+.npmrc
 .env.local
 .env.*.local
 *.pem
 *.key
+*.p12
+*.pfx
 
 # OS & IDE
 .DS_Store
@@ -40,6 +47,8 @@ Thumbs.db
 
 # Session & Scratchpad state
 *.log
+.cws/
+/sessions/
 scratchpad/
 temp/
 

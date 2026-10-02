@@ -32,6 +32,7 @@ describe('install-agents (one source → Copilot, Claude Code, Gemini/Antigravit
     assert.match(agents, /cws status/);
     assert.match(agents, /cws context/);
     assert.match(agents, /--agent/);
+    assert.match(agents, /cws safe-run --check/);
     assert.match(agents, /never/i);
     assert.match(await read('CLAUDE.md'), /@AGENTS\.md/);
     assert.match(await read('GEMINI.md'), /AGENTS\.md/);
@@ -87,5 +88,53 @@ describe('install-agents (one source → Copilot, Claude Code, Gemini/Antigravit
     assert.equal(await exists('.claude/commands/cws-plan.md'), false);
     assert.equal(await exists('.github/prompts/cws-plan.prompt.md'), true);
     assert.ok(result.written.length > 0);
+  });
+
+  it('rejects a linked AGENTS.md before reading or overwriting it', async (t) => {
+    const file = path.join(dir, 'AGENTS.md');
+    await fs.writeFile(file, 'external rules');
+    const originalLstat = fs.lstat.bind(fs);
+    t.mock.method(fs, 'lstat', async (target: Parameters<typeof fs.lstat>[0]) => {
+      const stat = await originalLstat(target);
+      if (String(target) === file) t.mock.method(stat, 'isSymbolicLink', () => true);
+      return stat;
+    });
+    await assert.rejects(installAgents(dir, { targets: ['agents-md'] }), /symbolic link|symlink/i);
+    assert.equal(await fs.readFile(file, 'utf8'), 'external rules');
+  });
+
+  it('rejects an external junction in target ancestry without writing external wrappers', async () => {
+    const root = path.join(dir, 'project');
+    const outside = path.join(dir, 'outside');
+    await fs.mkdir(root);
+    await fs.mkdir(outside);
+    await fs.symlink(outside, path.join(root, '.github'), 'junction');
+    await assert.rejects(installAgents(root, { targets: ['copilot'] }), /symbolic link|symlink|outside/i);
+    assert.deepEqual(await fs.readdir(outside), []);
+  });
+
+  it('rejects a destination whose real path is outside the canonical project root', async (t) => {
+    const root = path.join(dir, 'project');
+    const outside = path.join(dir, 'external.md');
+    await fs.mkdir(root);
+    const file = path.join(root, 'AGENTS.md');
+    await fs.writeFile(file, 'local rules');
+    await fs.writeFile(outside, 'external rules');
+    const originalRealpath = fs.realpath.bind(fs);
+    t.mock.method(fs, 'realpath', async (target: Parameters<typeof fs.realpath>[0]) => {
+      if (String(target) === file) return outside;
+      return originalRealpath(target);
+    });
+    await assert.rejects(installAgents(root, { targets: ['agents-md'] }), /outside the project/i);
+    assert.equal(await fs.readFile(file, 'utf8'), 'local rules');
+    assert.equal(await fs.readFile(outside, 'utf8'), 'external rules');
+  });
+
+  it('rejects an internal junction too rather than following linked target ancestry', async () => {
+    const destination = path.join(dir, 'alternate');
+    await fs.mkdir(destination);
+    await fs.symlink(destination, path.join(dir, '.claude'), 'junction');
+    await assert.rejects(installAgents(dir, { targets: ['claude'] }), /symbolic link|symlink/i);
+    assert.deepEqual(await fs.readdir(destination), []);
   });
 });
