@@ -1,3 +1,4 @@
+import { assertSessionId } from './ids.ts';
 import { AI_ALLOWED_CLAIM_TYPES, DomainError, HUMAN_ONLY_EVENTS, PHASES } from './types.ts';
 import { CLAIM_TYPE_STATUSES } from './types.ts';
 import type {
@@ -30,22 +31,72 @@ const opt = <K extends string, V>(key: K, value: V | undefined): { [P in K]?: V 
 // Validation
 // ---------------------------------------------------------------------------
 
-function existingIds(s: ProjectState): Set<string> {
-  const ids = new Set<string>();
-  for (const n of s.notes) ids.add(n.id);
-  for (const d of s.decisions) ids.add(d.id);
-  for (const p of s.proposals) ids.add(p.id);
-  for (const x of s.sessions) ids.add(x.id);
+type IdKind = 'note' | 'claim' | 'evidence' | 'decision' | 'proposal' | 'session' | 'event';
+type IdIndex = Map<string, IdKind>;
+
+/**
+ * Every id a state knows, by kind. Built once, then handed from each state to the next,
+ * so folding a log stays linear instead of rebuilding the index for every event.
+ */
+const indexes = new WeakMap<ProjectState, IdIndex>();
+
+function buildIndex(s: ProjectState): IdIndex {
+  const ids: IdIndex = new Map();
+  for (const n of s.notes) ids.set(n.id, 'note');
+  for (const d of s.decisions) ids.set(d.id, 'decision');
+  for (const p of s.proposals) ids.set(p.id, 'proposal');
+  for (const x of s.sessions) ids.set(x.id, 'session');
   for (const c of s.claims) {
-    ids.add(c.id);
-    for (const e of c.evidence) ids.add(e.id);
+    ids.set(c.id, 'claim');
+    for (const e of c.evidence) ids.set(e.id, 'evidence');
   }
   return ids;
 }
 
-function linkable(s: ProjectState): Set<string> {
-  return new Set([...s.notes, ...s.claims, ...s.decisions].map((x) => x.id));
+function indexOf(s: ProjectState): IdIndex {
+  let ids = indexes.get(s);
+  if (!ids) {
+    ids = buildIndex(s);
+    indexes.set(s, ids);
+  }
+  return ids;
 }
+
+/** Ids an event adds to the state, by kind (the event's own id included). */
+function addedIds(s: ProjectState, e: CwsEvent): Array<[string, IdKind]> {
+  const added: Array<[string, IdKind]> = [[e.id, 'event']];
+  const statusEvidence = (evidence: string | undefined): void => {
+    if (evidence !== undefined) added.push([`${e.id}_ev`, 'evidence']);
+  };
+  switch (e.type) {
+    case 'NOTE_ADDED': added.push([e.payload.noteId, 'note']); break;
+    case 'CLAIM_ADDED': added.push([e.payload.claimId, 'claim']); break;
+    case 'EVIDENCE_ADDED': added.push([e.payload.evidenceId, 'evidence']); break;
+    case 'PROPOSAL_SUBMITTED': added.push([e.payload.proposalId, 'proposal']); break;
+    case 'DECISION_RECORDED': added.push([e.payload.decisionId, 'decision']); break;
+    case 'SESSION_STARTED': added.push([e.payload.sessionId, 'session']); break;
+    case 'CLAIM_STATUS_CHANGED': statusEvidence(e.payload.evidence); break;
+    case 'PROPOSAL_ACCEPTED': {
+      const item = s.proposals.find((p) => p.id === e.payload.proposalId)?.item;
+      if (item?.kind === 'claim') added.push([e.payload.resultId, 'claim']);
+      if (item?.kind === 'decision') added.push([e.payload.resultId, 'decision']);
+      if (item?.kind === 'status') statusEvidence(item.evidence);
+      break;
+    }
+    default: break;
+  }
+  return added;
+}
+
+/** Move the index to the next state; the previous state rebuilds its own if it is ever reused. */
+function handOverIndex(prev: ProjectState, next: ProjectState, e: CwsEvent): void {
+  const ids = indexOf(prev);
+  indexes.delete(prev);
+  for (const [id, kind] of addedIds(prev, e)) ids.set(id, kind);
+  indexes.set(next, ids);
+}
+
+const LINKABLE: ReadonlySet<IdKind> = new Set(['note', 'claim', 'decision']);
 
 interface Refs {
   claims: string[];
@@ -61,23 +112,6 @@ function itemRefs(item: ProposedItem): Partial<Refs> {
   if (item.kind === 'status') return { claims: [item.claimId] };
   if (item.kind === 'decision') return { links: item.links ?? [] };
   return {};
-}
-
-/** Ids this event introduces; they must not collide with anything existing. */
-function newIdsOf(s: ProjectState, e: CwsEvent): string[] {
-  switch (e.type) {
-    case 'NOTE_ADDED': return [e.payload.noteId];
-    case 'CLAIM_ADDED': return [e.payload.claimId];
-    case 'EVIDENCE_ADDED': return [e.payload.evidenceId];
-    case 'PROPOSAL_SUBMITTED': return [e.payload.proposalId];
-    case 'DECISION_RECORDED': return [e.payload.decisionId];
-    case 'SESSION_STARTED': return [e.payload.sessionId];
-    case 'PROPOSAL_ACCEPTED': {
-      const kind = s.proposals.find((p) => p.id === e.payload.proposalId)?.item.kind;
-      return kind === 'claim' || kind === 'decision' ? [e.payload.resultId] : [];
-    }
-    default: return [];
-  }
 }
 
 /** Existing entities the event points at. */
@@ -99,19 +133,27 @@ function refsOf(e: CwsEvent): Refs {
 }
 
 function assertReferences(s: ProjectState, e: CwsEvent): void {
-  const taken = existingIds(s);
-  const dup = newIdsOf(s, e).find((id) => taken.has(id));
+  const index = indexOf(s);
+  const added = addedIds(s, e).map(([id]) => id);
+  const dup = added.find((id, i) => index.has(id) || added.indexOf(id) !== i);
   if (dup !== undefined) throw new DomainError('DUPLICATE_ID', `id "${dup}" already exists`);
 
   const refs = refsOf(e);
-  const check = (kind: string, ids: string[], known: Set<string>): void => {
-    const missing = ids.find((id) => !known.has(id));
+  const check = (kind: string, ids: string[], accepts: (k: IdKind | undefined) => boolean): void => {
+    const missing = ids.find((id) => !accepts(index.get(id)));
     if (missing !== undefined) throw new DomainError('NOT_FOUND', `${kind} "${missing}" not found`);
   };
-  check('claim', refs.claims, new Set(s.claims.map((c) => c.id)));
-  check('note/claim/decision', refs.links, linkable(s));
-  check('proposal', refs.proposals, new Set(s.proposals.map((p) => p.id)));
-  check('decision', refs.decisions, new Set(s.decisions.map((d) => d.id)));
+  check('claim', refs.claims, (k) => k === 'claim');
+  check('note/claim/decision', refs.links, (k) => k !== undefined && LINKABLE.has(k));
+  check('proposal', refs.proposals, (k) => k === 'proposal');
+  check('decision', refs.decisions, (k) => k === 'decision');
+}
+
+/** The event's session tag must name the session that is active when it is applied. */
+function assertEnvelope(s: ProjectState, e: CwsEvent): void {
+  if (e.sessionId !== s.activeSessionId) {
+    throw new DomainError('INVALID_EVENT', `event session "${e.sessionId ?? '(none)'}" is not the active session`);
+  }
 }
 
 function assertAuthorized(e: CwsEvent): void {
@@ -131,6 +173,7 @@ function assertPreconditions(state: ProjectState | null, e: CwsEvent): void {
   if (state && e.type === 'PROJECT_CREATED') throw new DomainError('PROJECT_EXISTS', 'project already exists');
   const expected = state ? state.lastSeq + 1 : 0;
   if (e.seq !== expected) throw new DomainError('BAD_SEQUENCE', `expected seq ${expected}, got ${e.seq}`);
+  if (Number.isNaN(Date.parse(e.at))) throw new DomainError('INVALID_EVENT', `event time "${e.at}" is not a date`);
 }
 
 // ---------------------------------------------------------------------------
@@ -172,7 +215,10 @@ function applyStatus(s: ProjectState, p: StatusChange, evidenceId: string, actor
   return mapClaim(s, p.claimId, (c) => {
     const evidence: Evidence[] =
       p.evidence === undefined ? c.evidence : [...c.evidence, { id: evidenceId, text: p.evidence, at, actor }];
-    return { ...c, status: p.status, ...opt('answer', p.answer), evidence, confirmed: true, updatedAt: at };
+    const { answer: _previous, ...rest } = c;
+    // An answer belongs to ANSWERED only; leaving that status drops it.
+    const answer = p.status === 'ANSWERED' ? p.answer : undefined;
+    return { ...rest, status: p.status, ...opt('answer', answer), evidence, confirmed: true, updatedAt: at };
   });
 }
 
@@ -268,6 +314,7 @@ function startSession(s: ProjectState, e: Of<'SESSION_STARTED'>): ProjectState {
     throw new DomainError('SESSION_ACTIVE', `session "${s.activeSessionId}" is still active`);
   }
   const { sessionId, goal, doneWhen, notTouching } = e.payload;
+  assertSessionId(sessionId);
   const session = {
     id: sessionId,
     goal,
@@ -366,9 +413,12 @@ function applyEvent(s: ProjectState, e: CwsEvent): ProjectState {
 export function reduce(state: ProjectState | null, event: CwsEvent): ProjectState {
   assertPreconditions(state, event);
   if (!state) return createProject(event as Of<'PROJECT_CREATED'>);
+  assertEnvelope(state, event);
   assertReferences(state, event);
   assertStatusEvent(state, event);
-  return { ...applyEvent(state, event), lastSeq: event.seq };
+  const next = { ...applyEvent(state, event), lastSeq: event.seq };
+  handOverIndex(state, next, event);
+  return next;
 }
 
 export function fold(events: readonly CwsEvent[]): ProjectState | null {

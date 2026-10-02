@@ -4,7 +4,7 @@ import path from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { z } from 'zod';
 import type { CwsEvent, ProjectState } from '../domain/types.ts';
-import { assertSessionId, CWS_DIR, EVENTS_FILE, verifyLogText } from './event-log.ts';
+import { assertSessionId, committedText, CWS_DIR, EVENTS_FILE, verifyLogText } from './event-log.ts';
 
 export const BACKUP_FORMAT = 'cws-backup';
 export const AUTO_BACKUP_KEEP = 5;
@@ -23,7 +23,7 @@ const bundleSchema = z.object({
   eventCount: z.number().int().min(1),
   headHash: z.string(),
   events: z.string(),
-  handoffs: z.record(z.string(), z.string().max(MAX_HANDOFF_BYTES)),
+  handoffs: z.record(z.string(), z.string().refine((s) => Buffer.byteLength(s, 'utf8') <= MAX_HANDOFF_BYTES, 'handoff is too large')),
 });
 
 export type BackupBundle = z.infer<typeof bundleSchema>;
@@ -55,12 +55,13 @@ async function sessionsDir(rootDir: string): Promise<string | null> {
   }
 }
 
-async function readHandoff(dir: string, sessionId: string): Promise<string | null> {
+async function readHandoff(dir: string, sessionId: string): Promise<string | 'too-large' | null> {
   assertSessionId(sessionId);
   const file = path.join(dir, `${sessionId}.md`);
   try {
     const stat = await fs.lstat(file);
-    if (!stat.isFile() || stat.size > MAX_HANDOFF_BYTES) return null;
+    if (!stat.isFile()) return null;
+    if (stat.size > MAX_HANDOFF_BYTES) return 'too-large';
     return await fs.readFile(file, 'utf8');
   } catch (err) {
     if (isErrno(err, 'ENOENT')) return null;
@@ -68,17 +69,25 @@ async function readHandoff(dir: string, sessionId: string): Promise<string | nul
   }
 }
 
+export interface CollectedBackup {
+  bundle: BackupBundle;
+  /** sessions whose handoff file was over the size limit and is not in the backup */
+  skippedHandoffs: string[];
+}
+
 /** Snapshot the event log and session handoffs of the project at `rootDir`. */
-export async function collectBackup(rootDir: string, now: Date = new Date()): Promise<BackupBundle> {
-  const events = await fs.readFile(path.join(rootDir, CWS_DIR, EVENTS_FILE), 'utf8');
+export async function collectBackup(rootDir: string, now: Date = new Date()): Promise<CollectedBackup> {
+  const events = committedText(await fs.readFile(path.join(rootDir, CWS_DIR, EVENTS_FILE), 'utf8'));
   const verified = verifyLogText(events);
   const dir = await sessionsDir(rootDir);
   const handoffs: Record<string, string> = {};
+  const skippedHandoffs: string[] = [];
   for (const session of dir ? verified.state.sessions : []) {
     const text = await readHandoff(dir!, session.id);
-    if (text !== null) handoffs[session.id] = text;
+    if (text === 'too-large') skippedHandoffs.push(session.id);
+    else if (text !== null) handoffs[session.id] = text;
   }
-  return {
+  const bundle: BackupBundle = {
     format: BACKUP_FORMAT,
     version: 1,
     createdAt: now.toISOString(),
@@ -88,6 +97,7 @@ export async function collectBackup(rootDir: string, now: Date = new Date()): Pr
     events,
     handoffs,
   };
+  return { bundle, skippedHandoffs };
 }
 
 export function encodeBackup(bundle: BackupBundle): Buffer {
@@ -187,7 +197,7 @@ export async function writeAutoBackup(rootDir: string, now: Date = new Date()): 
   const dir = path.join(rootDir, CWS_DIR, BACKUPS_DIR);
   await realDirectory(dir, rootDir);
   const file = path.join(dir, backupFileName(now));
-  await fs.writeFile(file, encodeBackup(await collectBackup(rootDir, now)), { flag: 'wx' });
+  await fs.writeFile(file, encodeBackup((await collectBackup(rootDir, now)).bundle), { flag: 'wx' });
   await pruneBackups(dir, AUTO_BACKUP_KEEP);
   return file;
 }

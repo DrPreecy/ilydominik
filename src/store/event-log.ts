@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { newId } from '../domain/ids.ts';
+import { assertSessionId, newId } from '../domain/ids.ts';
 import { fold, reduce } from '../domain/reducer.ts';
 import { parseEventInput, parseStoredEvent } from '../domain/schema.ts';
 import { DomainError } from '../domain/types.ts';
@@ -22,11 +22,7 @@ export interface Integrity {
 
 type EventBody = Omit<CwsEvent, 'hash'>;
 
-export function assertSessionId(sessionId: string): void {
-  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(sessionId) || /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(sessionId)) {
-    throw new DomainError('INVALID_EVENT', 'session identifier must be filename-safe (letters, digits, underscores or hyphens, at most 128 characters)');
-  }
-}
+export { assertSessionId };
 
 export function findProjectRoot(startDir: string): string | null {
   let dir = path.resolve(startDir);
@@ -78,8 +74,28 @@ function parseLines(raw: string): CwsEvent[] {
   return events;
 }
 
+function parsesAsEvent(line: string): boolean {
+  try {
+    parseStoredEvent(JSON.parse(line));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The committed part of a log: every append ends with a newline, so an unterminated last
+ * line that does not parse is an append still in progress (or cut off by a crash), not data.
+ */
+export function committedText(raw: string): string {
+  const end = raw.lastIndexOf('\n') + 1;
+  if (end === raw.length) return raw;
+  const tail = raw.slice(end);
+  return tail.trim() === '' || parsesAsEvent(tail) ? raw : raw.slice(0, end);
+}
+
 async function readEvents(file: string): Promise<CwsEvent[]> {
-  return parseLines(await fs.readFile(file, 'utf8'));
+  return parseLines(committedText(await fs.readFile(file, 'utf8')));
 }
 
 function isErrno(err: unknown, code: string): boolean {
@@ -171,7 +187,10 @@ async function acquireLock(lockPath: string): Promise<string> {
     } catch (err) {
       if (!isErrno(err, 'EEXIST') && !isErrno(err, 'EPERM') && !isErrno(err, 'EBUSY')) throw err;
     }
-    if (Date.now() > deadline) throw new Error(`timed out waiting for lock ${lockPath}`);
+    if (Date.now() > deadline) {
+      throw new Error(`timed out waiting for lock ${lockPath}. If no other cws command is running, ` +
+        'the lock was left behind by a crash: check that no cws process is running, then delete only that lock file and retry.');
+    }
     if (await takeOver(lockPath, nonce)) return nonce;
     await sleep(LOCK_RETRY_MS);
   }
@@ -200,14 +219,16 @@ export class EventLog {
     try {
       await fs.writeFile(file, '', { flag: 'wx' });
     } catch (err) {
-      if (isErrno(err, 'EEXIST')) throw new DomainError('PROJECT_EXISTS', `project already exists in ${rootDir}`);
-      throw err;
+      if (!isErrno(err, 'EEXIST')) throw err;
+      // An empty log is an init that crashed before its first event; take it over.
+      if ((await fs.stat(file)).size > 0) throw new DomainError('PROJECT_EXISTS', `project already exists in ${rootDir}`);
     }
     const log = new EventLog(rootDir, [], null);
     try {
       await log.append({ type: 'PROJECT_CREATED', actor: { kind: 'human' }, payload: { projectId: newId('p'), title } });
     } catch (err) {
-      await fs.rm(file, { force: true });
+      // Remove only a log that is still empty; a concurrent init may have created the project.
+      if ((await fs.stat(file).catch(() => null))?.size === 0) await fs.rm(file, { force: true });
       throw err;
     }
     return log;
@@ -260,7 +281,10 @@ export class EventLog {
 
   private async appendLocked(inputs: readonly EventInput[]): Promise<CwsEvent[]> {
     const file = EventLog.filePath(this.rootDir);
-    const raw = await fs.readFile(file, 'utf8');
+    const full = await fs.readFile(file, 'utf8');
+    const raw = committedText(full);
+    // Drop a torn tail before appending; it was never committed.
+    if (raw.length < full.length) await fs.truncate(file, Buffer.byteLength(raw, 'utf8'));
     const events = parseLines(raw);
     let state = fold(events);
     let prevHash = events.at(-1)?.hash ?? GENESIS_HASH;
@@ -315,11 +339,17 @@ export interface LogComparison {
   common: number;
 }
 
+/**
+ * How a local log relates to an incoming one. Hash fields alone prove nothing about a local
+ * line that was edited in place, so a local log that fails its own chain check counts as diverged.
+ */
 export function compareLogs(local: readonly CwsEvent[], incoming: readonly CwsEvent[]): LogComparison {
   const shared = Math.min(local.length, incoming.length);
   let common = 0;
   while (common < shared && local[common]!.hash === incoming[common]!.hash) common++;
   if (local.length === 0) return { relation: 'empty', common };
+  const integrity = checkIntegrity(local);
+  if (!integrity.ok) return { relation: 'diverged', common: Math.min(common, integrity.brokenAtSeq!) };
   if (common < shared) return { relation: 'diverged', common };
   if (local.length === incoming.length) return { relation: 'same', common };
   return { relation: incoming.length > local.length ? 'incoming-ahead' : 'local-ahead', common };
@@ -337,7 +367,7 @@ async function readLocalEvents(file: string): Promise<CwsEvent[] | null> {
     throw err;
   }
   try {
-    return parseLines(raw);
+    return parseLines(committedText(raw));
   } catch {
     return null;
   }
@@ -354,8 +384,8 @@ async function writeLogFile(file: string, raw: string): Promise<void> {
 }
 
 /**
- * Install verified log text under the lock. It only extends the local log,
- * unless `replace` allows overwriting a local log that diverged from it.
+ * Install verified log text under the lock. It only extends the local log, unless `replace`
+ * allows overwriting a local log that diverged from it or ran ahead of it (rolling back).
  */
 export async function restoreLog(rootDir: string, raw: string, replace: boolean): Promise<RestoreOutcome> {
   const incoming = verifyLogText(raw).events;
@@ -368,13 +398,13 @@ export async function restoreLog(rootDir: string, raw: string, replace: boolean)
     const file = path.join(dir, EVENTS_FILE);
     const local = await readLocalEvents(file);
     const relation: LogRelation = local === null ? 'diverged' : compareLogs(local, incoming).relation;
-    if (relation === 'same' || relation === 'local-ahead') return relation;
+    if (relation === 'same' || (relation === 'local-ahead' && !replace)) return relation;
     if (relation === 'diverged' && !replace) {
       throw new Error('the local event log is unreadable or has diverged from the backup; nothing was changed');
     }
     await writeLogFile(file, raw.endsWith('\n') ? raw : `${raw}\n`);
     if (relation === 'empty') return 'created';
-    return relation === 'diverged' ? 'replaced' : 'fast-forward';
+    return relation === 'incoming-ahead' ? 'fast-forward' : 'replaced';
   } finally {
     await releaseLock(lockPath, nonce);
   }
