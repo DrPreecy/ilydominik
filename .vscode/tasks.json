@@ -1,0 +1,12 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "CWS: verify repo",
+      "type": "shell",
+      "command": "npm run verify:repo",
+      "group": "test",
+      "problemMatcher": []
+    }
+  ]
+}

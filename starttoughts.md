@@ -1402,4 +1402,4 @@ That question should guide the transition from this constitution into the techni
 
 
 
-Quick Addition : somenthing like pre made prompts etc. is also very important since for me atleast there is so much friction in trying to figure out how and what to prompt and how to do it opitmal, which context is neeeded which not etc. so this are also steps which i mean next step w since they create so much frcition and can throw u off so bad if u are already insecure. 
+Quick Addition : somenthing like pre made prompts etc. is also very important since for me atleast there is so much friction in trying to figure out how and what to prompt and how to do it opitmal, which context is neeeded which not etc. so this are also steps which i mean next step w since they create so much frcition and can throw u off so bad if u are already insecure.

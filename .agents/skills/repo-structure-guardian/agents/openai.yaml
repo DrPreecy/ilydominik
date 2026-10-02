@@ -1,0 +1,5 @@
+name: Repo Structure Guardian
+description: Keeps CWS files in the canonical root package layout and runs the repo hygiene scan before handoff.
+tools:
+  - shell
+  - filesystem

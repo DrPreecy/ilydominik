@@ -23,11 +23,9 @@ jobs:
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --dir v2 install --frozen-lockfile
+      - run: npm run format:check
       - run: npm run typecheck
       - run: npm run build
       - run: npm test
       - run: npm run coverage
-      - run: npm run legacy:typecheck
-      - run: npm run legacy:build
-      - run: npm run legacy:test
+      - run: npm run verify:repo
