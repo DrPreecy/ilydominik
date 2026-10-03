@@ -1,0 +1,21 @@
+{
+  // CWS workspace: node, pnpm, Docker (for the agent sandbox) and the agent CLIs.
+  // Sign in to each agent once per Codespace with your existing subscription.
+  // No API keys are needed, and none are stored in this repository.
+  "name": "CWS",
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:1-24-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/python:1": { "version": "3.12" }
+  },
+  "hostRequirements": { "cpus": 2, "memory": "8gb", "storage": "32gb" },
+  "containerEnv": { "CWS_AUTO_BACKUP": "1" },
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": ["GitHub.copilot-chat", "anthropic.claude-code", "openai.chatgpt", "Google.geminicodeassist"]
+    },
+    "codespaces": { "openFiles": ["README.md"] }
+  }
+}

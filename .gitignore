@@ -48,11 +48,10 @@ Thumbs.db
 # Session & Scratchpad state
 *.log
 .cws/
+cws-backup-*.json.gz
 /sessions/
 scratchpad/
 temp/
 
-# CWS v2
-v2/node_modules/
-v2/dist/
-v2/coverage/
+# Archived/generated material
+archive/v1/generated-v2-artifacts/

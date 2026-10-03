@@ -1,29 +1,30 @@
 {
-  "name": "cognitive-work-system",
-  "version": "0.1.0",
-  "description": "An adaptive, human-led cognitive work environment for turning complex ideas into structured, tested projects.",
+  "name": "cws",
+  "version": "2.0.0-alpha.0",
+  "description": "Human-led, event-sourced project memory with agent-agnostic prompts.",
   "type": "module",
-  "main": "dist/index.js",
+  "bin": { "cws": "dist/cli/main.js" },
+  "files": ["dist", "prompts", "docs", "README.md", "LICENSE"],
   "scripts": {
-    "build": "npm --prefix v2 run build",
-    "test": "npm --prefix v2 test && node --test tests/entrypoint.test.mjs",
-    "typecheck": "npm --prefix v2 run typecheck",
-    "coverage": "npm --prefix v2 run coverage",
-    "cws": "node --import tsx v2/src/cli/main.ts",
-    "legacy:build": "tsc",
-    "legacy:test": "node --test --import tsx \"tests/**/*.test.ts\"",
-    "legacy:typecheck": "tsc --noEmit"
+    "prebuild": "node scripts/clean-dist.mjs",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --import tsx \"tests/**/*.test.ts\" \"tests/**/*.test.mjs\"",
+    "coverage": "c8 --reporter=text --check-coverage --lines 80 --functions 80 --branches 75 npm test",
+    "format": "node scripts/check-format.mjs --write",
+    "format:check": "node scripts/check-format.mjs",
+    "verify:repo": "node scripts/check-repo-structure.mjs",
+    "verify": "npm run format:check && npm run typecheck && npm run build && npm test && npm run coverage && npm run verify:repo",
+    "cws": "node --import tsx src/cli/main.ts"
   },
-  "keywords": [
-    "cognitive-architecture",
-    "spec-driven-development",
-    "ai-agent",
-    "state-machine"
-  ],
-  "author": "Dominik",
   "license": "MIT",
+  "dependencies": {
+    "commander": "^15.0.0",
+    "zod": "^4.6.5"
+  },
   "devDependencies": {
     "@types/node": "^26.6.4",
+    "c8": "^12.0.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   }

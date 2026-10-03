@@ -1,71 +1,106 @@
-# Cognitive Work System
+# CWS: Cognitive Work System
 
-The canonical application is the event-sourced CLI in [v2/README.md](v2/README.md).
-Root commands now run and verify that implementation. This is entrypoint
-consolidation, not a merge of the two state models or an automatic data migration.
+You think. CWS keeps the structure: your raw thoughts, what you said vs. what an AI guessed, open questions, risky assumptions, decisions and why, and what to do next. It also hands any AI assistant (Copilot, Claude Code, Codex, Gemini/Antigravity) a ready-made prompt with the right context, so you never paste context by hand.
 
-## Setup and Run
+Intent: [starttoughts.md](starttoughts.md). Spec: [docs/spec.md](docs/spec.md). Workflow (as blocks): [docs/workflow.md](docs/workflow.md).
 
-Install both packages from this directory (their dependency sets remain separate):
+## Install
 
 ```bash
-pnpm install --frozen-lockfile
-pnpm --dir v2 install --frozen-lockfile
+pnpm install
 npm run build
-npm run cws -- --help
-```
-
-`npm run cws -- <arguments>` runs canonical source in this repository's working
-directory. It deliberately does not use `npm --prefix v2` to launch the CLI:
-that would select `v2/` as the project directory.
-
-For use in another project, install the built CLI globally from its package:
-
-```bash
-cd v2
 npm link
-cd /path/to/your/project
-cws init "My idea"
-cws status
 ```
 
-The built entrypoint is `v2/dist/cli/main.js`; root `npm run build` produces it.
-See the [CLI guide](v2/README.md) for sessions, prompts, review, and known limits.
+### In the cloud (GitHub Codespaces)
 
-## Verification
+No local Docker or strong PC needed. On GitHub, choose **Code → Codespaces → Create codespace**. The setup in [.devcontainer](.devcontainer) installs CWS (`cws` is on the PATH), Docker, and the Claude Code, Codex, Gemini and Copilot command-line tools, so every agent works the same way.
+
+- **Sign in once per new Codespace.** No API keys: CWS expects you to use the subscriptions you already have. `gh auth login` for Copilot, then `claude`, `codex login` and `gemini` for the others. A Codespace keeps its sign-in until it is deleted, so a fresh one needs a fresh sign-in.
+- Run `cws doctor` to see what this machine has: host kind, project memory, and every tool with its version.
+- Stop the Codespace when you are done; unused Codespaces are deleted after 30 days.
+- Your memory lives in `.cws/`, which is not in git. `cws session end` saves a backup to `.cws/backups/` there; download it (right-click → Download).
+
+| You want to | Run |
+| --- | --- |
+| save everything to one file | `cws export --to my-project.json.gz` |
+| restore it in a new Codespace | `cws import my-project.json.gz` |
+
+Import only adds newer events. If both sides changed, or local memory fails its integrity check, it stops; `--replace` overwrites local memory after you confirm (also to roll back to an older backup).
+
+## Start a Project
 
 ```bash
-npm test
+cws init "My idea"
+cws install-agents
+cws session start "what I want to get out of today"
+cws dump "whatever is in my head, messy is fine"
+```
+
+## Daily Loop
+
+| You want to | Run |
+| --- | --- |
+| see what this workspace has | `cws doctor` |
+| see where you are | `cws status` |
+| know what to do next | `cws next` |
+| get the ready prompt for option N | `cws prompt 1 --copy` |
+| see what a code review must cover | `cws review-code --from main --to HEAD` |
+| record review findings | `cws findings ingest results.sarif` |
+| see open findings | `cws findings list` |
+| allow a sandbox to reach one host | `cws sandbox policy --rule api.github.com:443` |
+| run one command isolated | `cws sandbox run -- <command>` |
+| answer a blocked network request | `cws sandbox rules --approve <chunk-id>` |
+| check what the AI suggested | `cws review` |
+| decide something | `cws decide --title ... --options a,b --selected a --rationale ...` |
+| move phase | `cws phase understanding --reason "..."` |
+| stop for today | `cws session end --summary "..."` |
+
+## Code Review
+
+Code review is split so the deterministic part is a tool's job and the judgement stays with your agent:
+
+1. `cws review-code` runs [Open Code Review](https://github.com/alibaba/open-code-review) in delegation mode. That needs no model key: it only lists which files would be reviewed and which rule applies to each file, and every file must end as reviewed or as an explained skip.
+2. Your agent reviews the files with its own model and records what it finds: `cws findings ingest --agent <name> --format cws -` (JSON on stdin), or point it at tool output such as `--format sarif` for Semgrep, CodeQL or `ocr review --format sarif`.
+3. Every finding becomes an AI hypothesis in the log with a severity-derived risk and a fingerprint, so re-running a tool records only what is new (at most `--limit` per run). In `cws review` you mark it supported, falsified or retired — and that verdict is what later tells CWS how much to trust a tool.
+
+Secrets are redacted before anything is stored and in every prompt context, and OCR is installed separately (`npm i -g @alibaba-group/open-code-review`). Without it, `cws doctor` says so and the rest of CWS still works.
+
+## Sandbox (optional)
+
+`safe-run` guards a command; it does not isolate it. When [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) is installed, CWS can put agent work in a sandbox whose network access is a file you approve:
+
+1. `cws sandbox policy --rule api.github.com:443` records the rule (with a confirmation code) as a decision. Nothing else is reachable — no wildcards, no query strings, no plain-TCP bypass, no local or cloud-metadata addresses. The event log is the source of approved rules; `.cws/sandbox/rules.json` can narrow logged grants but cannot add or widen access. `.cws/sandbox/policy.yaml` is rebuilt from logged approvals before every run.
+2. `cws sandbox run -- <command>` creates a sandbox with that policy, uploads the project, runs one command, reports its exit code and deletes the sandbox again (`--keep` leaves it running). Add `--claim <id>` to attach the run as evidence.
+3. A request the sandbox is not allowed to make becomes a pending rule. `cws sandbox rules` lists them; `cws sandbox rules --approve <chunk-id>` (with a confirmation code) or `--reject <chunk-id> --reason "..."` answers one, and your answer is recorded as a decision.
+
+Without OpenShell, `cws sandbox status` says so and everything else keeps working. The sandbox is the one place CWS relies on an outside tool for the guarantee; it never fakes that guarantee itself.
+
+## Rules
+
+- **AI suggests, you decide.** Agents run commands with `--agent <name>`. They can record interpretations, assumptions, open questions, and evidence, all marked as unconfirmed AI. Facts, your statements, decisions, status changes, and phase changes only happen when you accept them.
+- **Warnings, not walls.** CWS never blocks you. When you go ahead despite open risks, it asks why, records that as a decision, and reminds you until the risk is resolved.
+- **Nothing is lost.** Everything is an append-only log in `.cws/events.jsonl`. `cws log` shows history; `cws verify` detects edits to past entries.
+
+## Known Limits
+
+- An AI with shell access could forge entries. CWS makes that deliberate and visible with challenge codes and a hash-chained log, not impossible.
+- Human commands need a real terminal. Piping text into `cws dump -` as a human is refused; type it or pass it as an argument.
+- There is no MCP server yet; agents use the CLI in their terminal.
+- `safe-run` is an advisory native-executable guard, not a sandbox. It blocks shells, interpreters and wrappers (`node -e`, `npx`, `env`, `wsl`, ...), destructive git forms (`reset --hard`, force push, `clean`, aliases), deleting or moving anything outside the project or inside `.git` and `.cws`, but it cannot see what an allowed program does, for example an edited npm script. `safe-run --check` refuses `;`, `|`, `<`, `>` even inside an argument, because a checked command is often retyped into a shell; `safe-run -- ...` itself runs without a shell, so there such characters in a message are plain text.
+- Tool paths come only from `CWS_TOOL_OCR`, `CWS_TOOL_OPENSHELL` and `CWS_TOOL_PROVER`, never from files in the repository.
+
+## Develop
+
+From the repository root:
+
+```bash
+npm run format:check
 npm run typecheck
 npm run build
+npm test
 npm run coverage
+npm run verify:repo
 ```
 
-`npm test` runs v2's suite and the root routing regressions. Coverage measures
-the canonical suite, with minimums of 80% lines/functions and 75% branches.
-See [REVIEW.md](REVIEW.md) for measured results and remaining work.
-
-GitHub Actions runs these checks on Windows and Ubuntu using Node 24. External
-research attempts and the unverified source queue are in [RESEARCH.md](RESEARCH.md).
-
-## Historical Compatibility
-
-Root [src/index.ts](src/index.ts), [tests/state-machine.test.ts](tests/state-machine.test.ts),
-[specs/state-machine-spec.md](specs/state-machine-spec.md), and
-[schemas/project-state.schema.json](schemas/project-state.schema.json) describe
-the historical v1 snapshot model, not the canonical CLI contract.
-
-```bash
-npm run legacy:test
-npm run legacy:typecheck
-npm run legacy:build
-```
-
-The existing root package `main` remains `dist/index.js` for historical imports;
-only `legacy:build` produces that artifact now. Canonical build output is under
-`v2/dist/`. These are intentionally different APIs. Keeping the historical API
-and data avoids silently breaking consumers or rewriting user records. No legacy
-source, session data, or prior worktree changes were deleted or migrated.
-
-The current specification is [v2/docs/spec.md](v2/docs/spec.md); the rationale
-for replacing v1 is [the rebuild decision](v2/docs/decisions/0001-rebuild-v2.md).
+`npm run verify` runs the full local gate. Historical v1 material is archived in [archive/v1](archive/v1) and is not part of the active package, tests, or build.
