@@ -1,6 +1,7 @@
 import type { Command } from 'commander';
 import { defaultConfig, loadIntegrations, toolOverride, type IntegrationsConfig, type SandboxMode, type ToolName } from '../../integrations/config.ts';
 import { findExecutable, isBatchShim, runTool, toolVersion, type RunResult } from '../../integrations/exec.ts';
+import { hasGeminiKey, readAiUsage, todayIsoDate } from '../../integrations/gemini.ts';
 import { EXIT } from '../io.ts';
 import { projectRoot, say, type Env } from '../human.ts';
 
@@ -136,7 +137,15 @@ function toolLine(result: ProbeResult): string {
 
 export function reportLines(
   results: readonly ProbeResult[],
-  ctx: { host: HostKind; configFile: string | null; configProblem?: string; configIgnored?: string; mode: SandboxMode; project: boolean },
+  ctx: {
+    host: HostKind;
+    configFile: string | null;
+    configProblem?: string;
+    configIgnored?: string;
+    mode: SandboxMode;
+    project: boolean;
+    gemini?: { hasKey: boolean; model: string; todayCount: number; dailyLimit: number };
+  },
 ): string[] {
   const required = results.filter((r) => r.probe.required === true);
   const optional = results.filter((r) => r.probe.required !== true);
@@ -148,6 +157,11 @@ export function reportLines(
     `Integrations:    ${ctx.configFile === null ? 'none' : ctx.configFile} (${settings})`,
     ...(ctx.configIgnored === undefined ? [] : [`Ignored:         ${ctx.configIgnored}`]),
     `Sandbox mode:    ${ctx.mode} — ${MODE_MEANING[ctx.mode]}`,
+    ...(ctx.gemini === undefined
+      ? []
+      : [
+          `Gemini API:      key present: ${ctx.gemini.hasKey ? 'yes' : 'no'} · model: ${ctx.gemini.model} · today's calls: ${ctx.gemini.todayCount}/${ctx.gemini.dailyLimit}`,
+        ]),
     '',
     'Required',
     ...required.map((r) => toolLine(r)),
@@ -183,6 +197,11 @@ export async function doctor(env: Env, opts: { deep?: boolean } = {}): Promise<n
     gateway: config.sandbox.gateway !== undefined,
   });
 
+  const hasKey = hasGeminiKey();
+  const usage = root !== null ? await readAiUsage(root) : { date: '', count: 0 };
+  const today = todayIsoDate();
+  const todayCount = usage.date === today ? usage.count : 0;
+
   const lines = reportLines(results, {
     host,
     configFile: loaded.file,
@@ -190,6 +209,12 @@ export async function doctor(env: Env, opts: { deep?: boolean } = {}): Promise<n
     ...(loaded.ignored === undefined ? {} : { configIgnored: loaded.ignored }),
     mode,
     project: root !== null,
+    gemini: {
+      hasKey,
+      model: config.gemini.model,
+      todayCount,
+      dailyLimit: config.gemini.dailyCallLimit,
+    },
   });
 
   const missingRequired = results.filter((r) => r.probe.required === true && r.file === null);

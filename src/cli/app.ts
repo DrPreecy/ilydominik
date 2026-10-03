@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { Command, CommanderError } from 'commander';
 import { DomainError } from '../domain/types.ts';
+import { registerAi } from './commands/ai.ts';
 import { registerBackup } from './commands/backup.ts';
 import { registerCapture } from './commands/capture.ts';
 import { registerDecisions } from './commands/decisions.ts';
@@ -44,6 +45,7 @@ export function buildProgram(env: Env): Command {
   registerDoctor(program, env);
   registerSession(program, env);
   registerCapture(program, env);
+  registerAi(program, env);
   registerGuidance(program, env);
   registerProposals(program, env);
   registerDecisions(program, env);
@@ -65,9 +67,9 @@ function exitCodeFor(error: unknown, io: CliIO): number {
   return EXIT.ERROR;
 }
 
-export async function runCli(argv: string[], io: CliIO): Promise<number> {
+export async function runCli(argv: string[], io: CliIO, envOverrides?: Partial<Env>): Promise<number> {
   try {
-    await buildProgram({ io }).parseAsync(argv, { from: 'user' });
+    await buildProgram({ io, ...envOverrides }).parseAsync(argv, { from: 'user' });
     return EXIT.OK;
   } catch (error: unknown) {
     return exitCodeFor(error, io);

@@ -19,6 +19,25 @@ export const TOOL_ENV = {
 } as const;
 export type ToolName = keyof typeof TOOL_ENV;
 
+export const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
+export const DEFAULT_DAILY_LIMIT = 20;
+export const DEFAULT_MAX_INPUT_CHARS = 100_000;
+export const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
+
+export interface GeminiConfig {
+  model: string;
+  dailyCallLimit: number;
+  maxInputChars: number;
+  maxOutputTokens: number;
+}
+
+const geminiSchema = z.object({
+  model: z.string().min(1).optional(),
+  dailyCallLimit: z.number().int().min(1).optional(),
+  maxInputChars: z.number().int().min(100).optional(),
+  maxOutputTokens: z.number().int().min(100).optional(),
+});
+
 const schema = z.object({
   version: z.literal(1),
   sandbox: z
@@ -28,6 +47,7 @@ const schema = z.object({
       gateway: z.string().min(1).optional(),
     })
     .optional(),
+  gemini: geminiSchema.optional(),
   /** accepted so older files still load, but never used */
   tools: z.record(z.string(), z.unknown()).optional(),
 });
@@ -35,6 +55,7 @@ const schema = z.object({
 export interface IntegrationsConfig {
   version: 1;
   sandbox: { mode: SandboxMode; wslDistro?: string; gateway?: string };
+  gemini: GeminiConfig;
 }
 
 export interface LoadedConfig {
@@ -47,7 +68,16 @@ export interface LoadedConfig {
 }
 
 export function defaultConfig(): IntegrationsConfig {
-  return { version: 1, sandbox: { mode: 'auto' } };
+  return {
+    version: 1,
+    sandbox: { mode: 'auto' },
+    gemini: {
+      model: DEFAULT_GEMINI_MODEL,
+      dailyCallLimit: DEFAULT_DAILY_LIMIT,
+      maxInputChars: DEFAULT_MAX_INPUT_CHARS,
+      maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+    },
+  };
 }
 
 export function configPath(rootDir: string): string {
@@ -100,6 +130,12 @@ export async function loadIntegrations(rootDir: string): Promise<LoadedConfig> {
         mode: data.sandbox?.mode ?? 'auto',
         ...(data.sandbox?.wslDistro === undefined ? {} : { wslDistro: data.sandbox.wslDistro }),
         ...(data.sandbox?.gateway === undefined ? {} : { gateway: data.sandbox.gateway }),
+      },
+      gemini: {
+        model: data.gemini?.model ?? DEFAULT_GEMINI_MODEL,
+        dailyCallLimit: data.gemini?.dailyCallLimit ?? DEFAULT_DAILY_LIMIT,
+        maxInputChars: data.gemini?.maxInputChars ?? DEFAULT_MAX_INPUT_CHARS,
+        maxOutputTokens: data.gemini?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
       },
     },
   };
