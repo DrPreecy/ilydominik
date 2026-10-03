@@ -13,6 +13,8 @@ export class CliExit extends Error {
 export interface Env {
   io: CliIO;
   geminiCaller?: import('../integrations/gemini.ts').GeminiCaller;
+  credentialsPath?: string;
+  firestoreSyncClient?: import('../cloud/sync.ts').FirestoreSyncClient;
 }
 
 export interface ActorOpts {

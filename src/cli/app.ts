@@ -15,6 +15,7 @@ import { registerReviewCode } from './commands/review-code.ts';
 import { registerSafety } from './commands/safety.ts';
 import { registerSandbox } from './commands/sandbox.ts';
 import { registerSession } from './commands/session.ts';
+import { registerSync } from './commands/sync.ts';
 import { sanitize } from './format.ts';
 import { CliExit, type Env } from './human.ts';
 import { EXIT, type CliIO } from './io.ts';
@@ -54,6 +55,7 @@ export function buildProgram(env: Env): Command {
   registerFindings(program, env);
   registerReviewCode(program, env);
   registerSandbox(program, env);
+  registerSync(program, env);
   // Last: the menu is the root action, and it must not hand its settings down to the commands above.
   registerMenu(program, env, (args) => buildProgram(env).parseAsync(args, { from: 'user' }));
   return program;

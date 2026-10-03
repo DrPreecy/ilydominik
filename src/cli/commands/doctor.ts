@@ -2,6 +2,7 @@ import type { Command } from 'commander';
 import { defaultConfig, loadIntegrations, toolOverride, type IntegrationsConfig, type SandboxMode, type ToolName } from '../../integrations/config.ts';
 import { findExecutable, isBatchShim, runTool, toolVersion, type RunResult } from '../../integrations/exec.ts';
 import { hasGeminiKey, readAiUsage, todayIsoDate } from '../../integrations/gemini.ts';
+import { loadCredentials } from '../../cloud/auth.ts';
 import { EXIT } from '../io.ts';
 import { projectRoot, say, type Env } from '../human.ts';
 
@@ -145,6 +146,7 @@ export function reportLines(
     mode: SandboxMode;
     project: boolean;
     gemini?: { hasKey: boolean; model: string; todayCount: number; dailyLimit: number };
+    cloudSync?: { isLoggedIn: boolean; user?: string; remoteProject?: string };
   },
 ): string[] {
   const required = results.filter((r) => r.probe.required === true);
@@ -161,6 +163,11 @@ export function reportLines(
       ? []
       : [
           `Gemini API:      key present: ${ctx.gemini.hasKey ? 'yes' : 'no'} · model: ${ctx.gemini.model} · today's calls: ${ctx.gemini.todayCount}/${ctx.gemini.dailyLimit}`,
+        ]),
+    ...(ctx.cloudSync === undefined
+      ? []
+      : [
+          `Cloud Sync:      logged in: ${ctx.cloudSync.isLoggedIn ? `yes (${ctx.cloudSync.user ?? 'authenticated'})` : 'no'} · remote: ${ctx.cloudSync.remoteProject ?? 'not linked'}`,
         ]),
     '',
     'Required',
@@ -202,6 +209,13 @@ export async function doctor(env: Env, opts: { deep?: boolean } = {}): Promise<n
   const today = todayIsoDate();
   const todayCount = usage.date === today ? usage.count : 0;
 
+  const creds = await loadCredentials(env.credentialsPath);
+  const cloudSync = {
+    isLoggedIn: creds !== null,
+    user: creds?.email ?? creds?.uid,
+    remoteProject: config.sync.projectId,
+  };
+
   const lines = reportLines(results, {
     host,
     configFile: loaded.file,
@@ -215,6 +229,7 @@ export async function doctor(env: Env, opts: { deep?: boolean } = {}): Promise<n
       todayCount,
       dailyLimit: config.gemini.dailyCallLimit,
     },
+    cloudSync,
   });
 
   const missingRequired = results.filter((r) => r.probe.required === true && r.file === null);
