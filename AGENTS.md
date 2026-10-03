@@ -11,6 +11,7 @@
 - `.github/` - CI and editor/agent integration files.
 - `.devcontainer/` - GitHub Codespaces / dev container setup shared by every agent.
 - `archive/v1/` - historical v1 material only; never import from it or include it in active checks.
+- `web/` — future dashboard (reserved by ADR 0003; imports only `cws/core`). `web/pretotype/` is a throwaway cloud test page with no build step.
 
 ## File Placement Rules
 
