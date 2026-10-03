@@ -128,3 +128,11 @@ You are completely set up when:
 - [ ] In the Firebase console, **Firestore Database** is created.
 - [ ] Running `echo $env:GEMINI_API_KEY` in a new PowerShell window prints your key.
 - [ ] Running `firebase projects:list` in your terminal lists your project.
+
+---
+
+## Note on Local Rules Testing
+
+Running the Firestore emulator locally (`npm run test:rules`) requires Java (JDK 21 or later).
+Normal development and testing (`npm test` and `npm run verify`) stay 100% offline and do not require Java or the emulator.
+
