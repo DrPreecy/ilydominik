@@ -4,6 +4,10 @@
   "description": "Human-led, event-sourced project memory with agent-agnostic prompts.",
   "type": "module",
   "bin": { "cws": "dist/cli/main.js" },
+  "exports": {
+    ".": "./dist/cli/main.js",
+    "./core": "./dist/core/index.js"
+  },
   "files": ["dist", "prompts", "docs", "README.md", "LICENSE"],
   "scripts": {
     "prebuild": "node scripts/clean-dist.mjs",
