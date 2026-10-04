@@ -65,7 +65,7 @@ describe('finding 1: no terminal injection from AI-written text', () => {
       await cli(io, ...cmd);
       assert.doesNotMatch(all(io), /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/, cmd.join(' '));
     }
-    const r = human(['K7Q', 's']);
+    const r = human(['K7Q', 'k']);
     await cli(r, 'review');
     assert.doesNotMatch(all(r), /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
   });
@@ -99,7 +99,7 @@ describe('finding 2: the human sees everything they approve', () => {
     await cli(human(), 'claim', 'add', '--type', 'UNKNOWN', '--text', 'who pays?');
     const id = (await state()).claims[0]!.id;
     await propose([{ item: { kind: 'status', claimId: id, status: 'ANSWERED', answer: 'FULL-ANSWER-TEXT', evidence: 'FULL-EVIDENCE-TEXT' } }]);
-    const io = human(['K7Q', 's']);
+    const io = human(['K7Q', 'k']);
     await cli(io, 'review');
     assert.match(all(io), /FULL-ANSWER-TEXT/);
     assert.match(all(io), /FULL-EVIDENCE-TEXT/);

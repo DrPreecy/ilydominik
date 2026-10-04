@@ -16,7 +16,30 @@ function linkedText(state: ProjectState, id: string): string {
   return state.notes.find((n) => n.id === id)?.text ?? '(not found)';
 }
 
+/** Keys each item kind prints itself; anything else on the item is still shown, so nothing is approved unseen. */
+const SHOWN_KEYS: Readonly<Record<string, readonly string[]>> = {
+  claim: ['kind', 'type', 'risk', 'text', 'derivedFrom'],
+  status: ['kind', 'claimId', 'status', 'evidence', 'answer'],
+  decision: ['kind', 'title', 'options', 'selected', 'rationale', 'links'],
+  phase: ['kind', 'to', 'reason'],
+};
+
+function extraFields(item: Proposal['item'], state: ProjectState): string[] {
+  const shown = SHOWN_KEYS[item.kind] ?? [];
+  return Object.entries(item)
+    .filter(([key, value]) => !shown.includes(key) && value !== undefined)
+    .map(([key, value]) => {
+      const text = typeof value === 'string' ? value : JSON.stringify(value);
+      const target = key === 'supersedes' && typeof value === 'string' ? ` (${linkedText(state, value)})` : '';
+      return field(key, `${text}${target}`);
+    });
+}
+
 function itemFields(p: Proposal, state: ProjectState): string[] {
+  return [...kindFields(p, state), ...extraFields(p.item, state)];
+}
+
+function kindFields(p: Proposal, state: ProjectState): string[] {
   const item = p.item;
   switch (item.kind) {
     case 'claim':

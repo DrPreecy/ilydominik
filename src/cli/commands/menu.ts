@@ -1,25 +1,13 @@
 import { CommanderError, type Command } from 'commander';
-import { PHASES, type Phase, type ProjectState } from '../../domain/types.ts';
+import { PHASES, type ProjectState } from '../../domain/types.ts';
 import { nextSteps } from '../../guidance/next-steps.ts';
 import { pendingProposals, warningLine } from '../format.ts';
 import { CliExit, openLog, projectRoot, say, warn, type Env } from '../human.ts';
 import { riskyPhaseWarnings } from '../override.ts';
+import { STAGE_NAMES } from '../stages.ts';
 
 /** Runs one cws command through the normal command path, so every human check stays in place. */
 export type RunCommand = (args: string[]) => Promise<unknown>;
-
-/** The workflow names for the nine phases (docs/workflow.md). */
-const STAGE_NAMES: Readonly<Record<Phase, string>> = {
-  EXPLORATION: 'Explore',
-  UNDERSTANDING: 'Understand',
-  SYNTHESIS: 'Synthesize',
-  PROOF: 'Prove',
-  CONCEPT: 'Concept',
-  PLANNING: 'Plan',
-  IMPLEMENTATION: 'Build',
-  LAUNCH: 'Launch',
-  POST_LAUNCH: 'Learn',
-};
 
 const MENU_SIZE = 5;
 

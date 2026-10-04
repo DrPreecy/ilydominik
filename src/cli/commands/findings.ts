@@ -8,7 +8,7 @@ import { parseSarif } from '../../findings/sarif.ts';
 import { severityRank, SEVERITIES, type Finding, type Severity } from '../../findings/types.ts';
 import { parseOcrComments } from '../../integrations/ocr.ts';
 import { newId } from '../../domain/ids.ts';
-import { actorOf, fail, openLog, parseCount, projectRoot, requireHumanUnlessAgent, say, type ActorOpts, type Env } from '../human.ts';
+import { actorOf, fail, openLog, parseCount, projectRoot, requireHumanUnlessAgent, say, sayJson, type ActorOpts, type Env } from '../human.ts';
 
 const FORMATS = ['auto', 'sarif', 'ocr-review', 'cws'] as const;
 type Format = (typeof FORMATS)[number];
@@ -95,7 +95,7 @@ async function ingest(
     fail(env, `error: --format must be one of ${FORMATS.join(', ')}`);
   }
   const requested = format as Format;
-  const minimum = (opts.minSeverity ?? DEFAULT_MIN_SEVERITY) as Severity;
+  const minimum = (opts.minSeverity ?? DEFAULT_MIN_SEVERITY).trim().toLowerCase() as Severity;
   if (!(SEVERITIES as readonly string[]).includes(minimum)) {
     fail(env, `error: --min-severity must be one of ${SEVERITIES.join(', ')}`);
   }
@@ -175,12 +175,23 @@ function pathOf(claim: Claim): string {
   return 'unknown file';
 }
 
-async function list(env: Env, opts: { all?: boolean }): Promise<void> {
+async function list(env: Env, opts: { all?: boolean; json?: boolean }): Promise<void> {
   const log = await openLog(env);
   const recorded = recordedFindings(log.state);
   const claims = (opts.all === true ? recorded.map((entry) => entry.claim) : openFindings(log.state)).sort(
     (a, b) => severityRank(severityOf(a)) - severityRank(severityOf(b)),
   );
+  if (opts.json === true) {
+    return sayJson(env, {
+      findings: claims.map((claim) => ({
+        id: claim.id,
+        severity: severityOf(claim),
+        path: pathOf(claim),
+        status: claim.status,
+        text: claim.text.replace(/^cws-finding:[0-9a-f]+ /, ''),
+      })),
+    });
+  }
   if (claims.length === 0) {
     return say(env, 'No findings recorded yet. `cws review-code` shows what to review; `cws findings ingest` records results.');
   }
@@ -215,6 +226,7 @@ export function registerFindings(program: Command, env: Env): void {
     .command('list')
     .description('show findings that are still open')
     .option('--all', 'include findings that were already resolved')
-    .action((o: { all?: boolean }) => list(env, o));
+    .option('--json', 'machine-readable output (see docs/cli-json.md)')
+    .action((o: { all?: boolean; json?: boolean }) => list(env, o));
   findings.action(() => list(env, {}));
 }

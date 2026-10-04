@@ -257,7 +257,8 @@ describe('cli: the human/agent boundary', () => {
     await initProject();
     const io = mkAgent();
     assert.equal(await cli(io, 'claim', 'add', '--agent', 'gemini', '--type', 'FACT', '--text', 'x'), EXIT.ERROR);
-    assert.match(errText(io), /AI_CLAIM_TYPE_FORBIDDEN/);
+    assert.match(errText(io), /AI actors may not add FACT claims/);
+    assert.doesNotMatch(errText(io), /AI_CLAIM_TYPE_FORBIDDEN/);
   });
 
   it('propose accepts a single item, an array, or {proposals:[...]} from a file or stdin', async () => {
@@ -310,7 +311,7 @@ describe('cli: the human/agent boundary', () => {
     const [p1, p2] = s.proposals.map((p) => p.id);
     const [c, d] = s.claims.map((x) => x.id);
     assert.equal(await cli(human(['K7Q']), 'accept', p1!), EXIT.OK);
-    assert.equal(await cli(human(), 'reject', p2!, '--note', 'wrong'), EXIT.OK);
+    assert.equal(await cli(human(['K7Q']), 'reject', p2!, '--note', 'wrong'), EXIT.OK);
     assert.equal(await cli(human(['K7Q']), 'confirm', c!), EXIT.OK);
     assert.equal(await cli(human(['K7Q']), 'mark', c!, 'falsified', '--evidence', 'tested it'), EXIT.OK);
     assert.equal(await cli(human(['K7Q']), 'retire', d!, '--reason', 'irrelevant'), EXIT.OK);
@@ -331,7 +332,7 @@ describe('cli: the human/agent boundary', () => {
   it('review walks pending proposals interactively (a/r/s) after one challenge', async () => {
     await initProject();
     await cli(mkAgent(JSON.stringify([{ item: { kind: 'claim', type: 'FACT', text: 'A' } }, { item: { kind: 'claim', type: 'FACT', text: 'B' } }, { item: { kind: 'claim', type: 'FACT', text: 'C' } }])), 'propose', '--agent', 'claude', '--json', '-');
-    assert.equal(await cli(human(['K7Q', 'a', 'r', 'because', 's']), 'review'), EXIT.OK);
+    assert.equal(await cli(human(['K7Q', 'a', 'r', 'because', 'k']), 'review'), EXIT.OK);
     assert.deepEqual((await state()).proposals.map((p) => p.status), ['ACCEPTED', 'REJECTED', 'PENDING']);
   });
 });

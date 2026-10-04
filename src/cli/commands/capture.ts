@@ -2,7 +2,7 @@ import type { Command } from 'commander';
 import { newId } from '../../domain/ids.ts';
 import type { ClaimType, Risk } from '../../domain/types.ts';
 import { FINDING_MARKER, FINDING_MARKER_RESERVED } from '../../findings/types.ts';
-import { actorOf, confirmDecision, fail, openLog, requireHumanUnlessAgent, say, splitList, type ActorOpts, type Env } from '../human.ts';
+import { actorOf, confirmDecision, fail, openLog, requireAgentForRole, requireClaim, requireHumanUnlessAgent, say, splitList, type ActorOpts, type Env } from '../human.ts';
 
 interface AddClaimOpts extends ActorOpts {
   type: string;
@@ -22,6 +22,7 @@ const AUTHORITATIVE_TYPES = new Set(['FACT', 'USER_STATEMENT']);
 const isStdinMarker = (parts: string[]): boolean => parts.length === 0 || (parts.length === 1 && parts[0] === '-');
 
 async function dump(env: Env, parts: string[], opts: ActorOpts): Promise<void> {
+  requireAgentForRole(env, opts);
   requireHumanUnlessAgent(env, 'dump', opts);
   const text = isStdinMarker(parts) ? await env.io.readStdin() : parts.join(' ');
   if (text.trim() === '') fail(env, 'error: nothing to record — give some text, or pipe it in with `cws dump -`');
@@ -32,6 +33,7 @@ async function dump(env: Env, parts: string[], opts: ActorOpts): Promise<void> {
 }
 
 async function addClaim(env: Env, o: AddClaimOpts): Promise<void> {
+  requireAgentForRole(env, o);
   requireHumanUnlessAgent(env, 'claim add', o);
   if (o.text.trimStart().startsWith(FINDING_MARKER)) fail(env, FINDING_MARKER_RESERVED);
   const log = await openLog(env);
@@ -50,8 +52,10 @@ async function addClaim(env: Env, o: AddClaimOpts): Promise<void> {
 }
 
 async function addEvidence(env: Env, o: AddEvidenceOpts): Promise<void> {
+  requireAgentForRole(env, o);
   requireHumanUnlessAgent(env, 'evidence add', o);
   const log = await openLog(env);
+  requireClaim(env, log.state, o.claim);
   const evidenceId = newId('e');
   const payload = { evidenceId, claimId: o.claim, text: o.text, ...(o.source ? { source: o.source } : {}) };
   await log.append({ type: 'EVIDENCE_ADDED', actor: actorOf(o), payload });

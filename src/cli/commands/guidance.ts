@@ -1,13 +1,17 @@
 import type { Command } from 'commander';
-import { PURPOSES, type Purpose } from '../../domain/types.ts';
+import { PURPOSES } from '../../domain/types.ts';
 import { nextSteps } from '../../guidance/next-steps.ts';
 import { renderPrompt } from '../../guidance/render.ts';
-import { fail, openLog, parseCount, say, splitList, type Env } from '../human.ts';
+import { parsePurpose } from '../stages.ts';
+import { fail, openLog, parseCount, say, sayJson, splitList, type Env } from '../human.ts';
 
-async function next(env: Env, opts: { limit?: string }): Promise<void> {
+async function next(env: Env, opts: { limit?: string; json?: boolean }): Promise<void> {
   const log = await openLog(env);
   const limit = opts.limit === undefined ? 3 : parseCount(env, opts.limit, '--limit');
   const steps = nextSteps(log.state, limit);
+  if (opts.json === true) {
+    return sayJson(env, { steps: steps.map((s, i) => ({ n: i + 1, purpose: s.purpose, title: s.title, reason: s.reason, refs: s.refs })) });
+  }
   const lines = steps.map((s, i) => {
     const refs = s.refs.length > 0 ? ` (refs: ${s.refs.join(', ')})` : '';
     return `${i + 1}. [${s.purpose}] ${s.title} — ${s.reason}${refs}`;
@@ -26,11 +30,12 @@ async function prompt(env: Env, nArg: string | undefined, opts: { copy?: boolean
 }
 
 async function context(env: Env, purpose: string, opts: { focus?: string }): Promise<void> {
-  if (!(PURPOSES as readonly string[]).includes(purpose)) {
-    fail(env, `error: unknown purpose "${purpose}" (choose from ${PURPOSES.join(', ')})`);
+  const resolved = parsePurpose(purpose);
+  if (resolved === undefined) {
+    fail(env, `error: unknown purpose "${purpose}" (choose from ${PURPOSES.join(', ')}; stage names like Build work too)`);
   }
   const log = await openLog(env);
-  say(env, await renderPrompt(log.state, purpose as Purpose, splitList(opts.focus)));
+  say(env, await renderPrompt(log.state, resolved, splitList(opts.focus)));
 }
 
 export function registerGuidance(program: Command, env: Env): void {
@@ -38,7 +43,8 @@ export function registerGuidance(program: Command, env: Env): void {
     .command('next')
     .description('what to do next, as numbered options')
     .option('--limit <n>', 'how many options')
-    .action((o: { limit?: string }) => next(env, o));
+    .option('--json', 'machine-readable output (see docs/cli-json.md)')
+    .action((o: { limit?: string; json?: boolean }) => next(env, o));
   program
     .command('prompt [n]')
     .description('print the ready-to-use prompt for next step n')

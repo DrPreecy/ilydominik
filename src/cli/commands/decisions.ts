@@ -1,10 +1,11 @@
 import type { Command } from 'commander';
 import { newId } from '../../domain/ids.ts';
-import { CLAIM_STATUSES, CLAIM_TYPES, PHASES, type ClaimStatus, type ClaimType, type Phase, type ProjectState } from '../../domain/types.ts';
+import { CLAIM_STATUSES, CLAIM_TYPES, PHASES, type ClaimStatus, type ClaimType, type ProjectState } from '../../domain/types.ts';
 import { phaseWarnings } from '../../guidance/warnings.ts';
 import { oneLine, warningLine } from '../format.ts';
 import { isRisky, overrideInput } from '../override.ts';
 import { EXIT } from '../io.ts';
+import { parsePhase } from '../stages.ts';
 import { CliExit, confirmDecision, fail, openLog, requireClaim, requireHuman, say, splitList, type Env } from '../human.ts';
 
 const HUMAN = { kind: 'human' } as const;
@@ -61,6 +62,10 @@ interface DecideOpts {
 
 async function decide(env: Env, o: DecideOpts): Promise<void> {
   requireHuman(env, 'decide');
+  const options = splitList(o.options);
+  if (options.length > 0 && !options.includes(o.selected)) {
+    fail(env, `error: --selected "${o.selected}" is not one of the options (${options.join(', ')})`);
+  }
   const log = await openLog(env);
   await confirmDecision(env);
   const decisionId = newId('d');
@@ -68,7 +73,7 @@ async function decide(env: Env, o: DecideOpts): Promise<void> {
   const payload = {
     decisionId,
     title: o.title,
-    options: splitList(o.options),
+    options,
     selected: o.selected,
     rationale: o.rationale,
     ...(links.length > 0 ? { links } : {}),
@@ -94,7 +99,10 @@ function printAffected(env: Env, state: ProjectState): void {
 
 async function phase(env: Env, phaseArg: string, o: { reason: string; acceptRisk?: string }): Promise<void> {
   requireHuman(env, 'phase');
-  const to = oneOf<Phase>(env, phaseArg, PHASES, 'phase');
+  const to = parsePhase(phaseArg);
+  if (to === undefined) {
+    fail(env, `error: unknown phase "${phaseArg}" (choose from ${PHASES.join(', ')}; stage names like Build or the stage number work too)`);
+  }
   const log = await openLog(env);
   const warnings = phaseWarnings(log.state, to);
   const risky = warnings.some(isRisky);

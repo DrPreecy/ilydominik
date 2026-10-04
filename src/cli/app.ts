@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs';
 import { Command, CommanderError } from 'commander';
-import { DomainError } from '../domain/types.ts';
 import { registerAi } from './commands/ai.ts';
 import { registerBackup } from './commands/backup.ts';
 import { registerCapture } from './commands/capture.ts';
@@ -13,11 +12,11 @@ import { registerProject } from './commands/project.ts';
 import { registerProposals } from './commands/proposals.ts';
 import { registerReviewCode } from './commands/review-code.ts';
 import { registerSafety } from './commands/safety.ts';
-import { registerSandbox } from './commands/sandbox.ts';
+import { registerSandbox } from './commands/sandbox/index.ts';
 import { registerSession } from './commands/session.ts';
 import { registerSync } from './commands/sync.ts';
 import { sanitize } from './format.ts';
-import { CliExit, type Env } from './human.ts';
+import { CliExit, describeError, type Env } from './human.ts';
 import { EXIT, type CliIO } from './io.ts';
 
 const CLEAN_COMMANDER_EXITS = new Set(['commander.helpDisplayed', 'commander.help', 'commander.version']);
@@ -64,8 +63,7 @@ export function buildProgram(env: Env): Command {
 function exitCodeFor(error: unknown, io: CliIO): number {
   if (error instanceof CliExit) return error.code;
   if (error instanceof CommanderError) return CLEAN_COMMANDER_EXITS.has(error.code) ? EXIT.OK : EXIT.ERROR;
-  const message = error instanceof DomainError || error instanceof Error ? error.message : String(error);
-  io.stderr(`error: ${sanitize(message, true)}\n`);
+  io.stderr(`error: ${sanitize(describeError(error), true)}\n`);
   return EXIT.ERROR;
 }
 

@@ -1,12 +1,14 @@
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import type { Command } from 'commander';
 import { newId } from '../../domain/ids.ts';
 import { parseEventInput } from '../../domain/schema.ts';
 import type { EventInput, Proposal } from '../../domain/types.ts';
 import { FINDING_MARKER, FINDING_MARKER_RESERVED } from '../../findings/types.ts';
+import { EXIT } from '../io.ts';
 import { describeProposal } from '../describe.ts';
 import { actorLabel, aiClaimLine, oneLine, pendingProposals, summarizeItem, unconfirmedAiClaims } from '../format.ts';
-import { actorOf, confirmDecision, fail, openLog, requireHuman, say, type Env } from '../human.ts';
+import { actorOf, CliExit, confirmDecision, fail, openLog, requireHuman, say, sayJson, type Env } from '../human.ts';
 import { acceptWithRisk, guarded, printRisk, proposalRisk, rejectOne } from '../proposal-ops.ts';
 import { review } from './review.ts';
 import type { EventLog } from '../../store/event-log.ts';
@@ -28,25 +30,26 @@ function entriesOf(parsed: unknown): unknown[] {
   return [parsed];
 }
 
-function toInput(env: Env, entry: unknown, index: number, agent: string): EventInput {
+function toInput(env: Env, entry: unknown, index: number, agent: string, role?: string): EventInput {
   if (!isRecord(entry) || !isRecord(entry.item)) fail(env, `error: proposal #${index + 1} needs an "item" object`);
   const { text } = entry.item;
   if (typeof text === 'string' && text.trimStart().startsWith(FINDING_MARKER)) fail(env, FINDING_MARKER_RESERVED);
   const rationale = typeof entry.rationale === 'string' && entry.rationale.trim() !== '' ? entry.rationale : undefined;
   const payload = { proposalId: newId('pr'), item: entry.item, ...(rationale ? { rationale } : {}) };
   try {
-    return parseEventInput({ type: 'PROPOSAL_SUBMITTED', actor: actorOf({ agent }), payload });
+    return parseEventInput({ type: 'PROPOSAL_SUBMITTED', actor: actorOf(role === undefined ? { agent } : { agent, role }), payload });
   } catch (error: unknown) {
     fail(env, `error: proposal #${index + 1} is invalid: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
 async function readRaw(env: Env, source: string): Promise<string> {
+  const file = source === '-' ? source : path.resolve(env.io.cwd, source);
   if (source !== '-') {
-    const { size } = await fs.stat(source);
+    const { size } = await fs.stat(file);
     if (size > MAX_INPUT_CHARS * 4) fail(env, 'error: the proposal input is too large (limit 1 MB)');
   }
-  const raw = source === '-' ? await env.io.readStdin() : await fs.readFile(source, 'utf8');
+  const raw = source === '-' ? await env.io.readStdin() : await fs.readFile(file, 'utf8');
   if (raw.length > MAX_INPUT_CHARS) fail(env, 'error: the proposal input is too large (limit 1 MB)');
   return raw;
 }
@@ -66,7 +69,7 @@ async function propose(env: Env, opts: { agent?: string; role?: string; json?: s
   const { agent } = opts;
   const entries = entriesOf(await readJson(env, opts.json));
   if (entries.length > MAX_BATCH) fail(env, `error: too many proposals (${entries.length}); the limit is ${MAX_BATCH} per batch`);
-  const inputs = entries.map((e, i) => toInput(env, e, i, agent));
+  const inputs = entries.map((e, i) => toInput(env, e, i, agent, opts.role));
   if (inputs.length === 0) fail(env, 'error: no proposals found in the input');
   const log = await openLog(env);
   for (const event of await log.appendBatch(inputs)) {
@@ -86,25 +89,33 @@ function proposalLines(p: Proposal): string[] {
   ];
 }
 
-async function inbox(env: Env): Promise<void> {
+async function inbox(env: Env, opts: { json?: boolean } = {}): Promise<void> {
   const state = (await openLog(env)).state;
   const proposals = pendingProposals(state);
   const claims = unconfirmedAiClaims(state);
+  if (opts.json === true) {
+    return sayJson(env, {
+      proposals: proposals.map((p) => ({ id: p.id, kind: p.item.kind, summary: summarizeItem(p.item), by: actorLabel(p.actor), rationale: p.rationale ?? null })),
+      unconfirmedClaims: claims.map((c) => ({ id: c.id, type: c.type, risk: c.risk ?? null, text: c.text, by: actorLabel(c.createdBy) })),
+    });
+  }
   if (proposals.length === 0 && claims.length === 0) return say(env, 'Inbox empty.');
   if (proposals.length > 0) say(env, 'Pending proposals:', ...proposals.flatMap(proposalLines));
   if (claims.length > 0) say(env, 'Unconfirmed AI claims:', ...claims.map(aiClaimLine));
   say(env, 'Review them with `cws review`.');
 }
 
-async function acceptStep(env: Env, log: EventLog, p: Proposal, acceptRisk?: string): Promise<void> {
+/** true when the proposal was accepted; false when it needs --accept-risk first. */
+async function acceptStep(env: Env, log: EventLog, p: Proposal, acceptRisk?: string): Promise<boolean> {
   const warnings = proposalRisk(log, p);
   if (warnings.length > 0 && !acceptRisk) {
     say(env, `[${p.id}] has warnings and was NOT accepted:`);
     printRisk(env, warnings);
     say(env, `To accept anyway: cws accept ${p.id} --accept-risk "<why you accept this risk>"`);
-    return;
+    return false;
   }
   say(env, `accepted [${p.id}] → ${await acceptWithRisk(log, p, warnings, acceptRisk)}`);
+  return true;
 }
 
 async function accept(env: Env, ids: string[], opts: { all?: boolean; acceptRisk?: string }): Promise<void> {
@@ -117,7 +128,19 @@ async function accept(env: Env, ids: string[], opts: { all?: boolean; acceptRisk
   if (chosen.length === 0) return say(env, 'Nothing pending.');
   say(env, ...chosen.map((p) => describeProposal(p, log.state)));
   await confirmDecision(env);
-  for (const p of chosen) await guarded(env, p.id, () => acceptStep(env, log, p, opts.acceptRisk));
+  let failed = 0;
+  let needsRisk = 0;
+  for (const p of chosen) {
+    let accepted = false;
+    const ran = await guarded(env, p.id, async () => {
+      accepted = await acceptStep(env, log, p, opts.acceptRisk);
+    });
+    if (!ran) failed++;
+    else if (!accepted) needsRisk++;
+  }
+  // A skipped proposal is not a success: scripts must be able to see it.
+  if (failed > 0) throw new CliExit(EXIT.ERROR);
+  if (needsRisk > 0) throw new CliExit(EXIT.NEEDS_HUMAN);
 }
 
 async function reject(env: Env, id: string, opts: { note?: string }): Promise<void> {
@@ -139,7 +162,11 @@ export function registerProposals(program: Command, env: Env): void {
     .option('--role <role>', 'the role you played')
     .option('--json <file|->', 'proposals as JSON (file path or - for stdin)')
     .action((o: { agent?: string; role?: string; json?: string }) => propose(env, o));
-  program.command('inbox').description('what is waiting for your review').action(() => inbox(env));
+  program
+    .command('inbox')
+    .description('what is waiting for your review')
+    .option('--json', 'machine-readable output (see docs/cli-json.md)')
+    .action((o: { json?: boolean }) => inbox(env, o));
   program
     .command('accept [ids...]')
     .description('accept proposals (human)')

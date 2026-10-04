@@ -4,9 +4,9 @@ import type { ProjectState } from '../../domain/types.ts';
 import { assess } from '../../guidance/warnings.ts';
 import { nextSteps } from '../../guidance/next-steps.ts';
 import { EventLog } from '../../store/event-log.ts';
-import { claimCounts, eventLine, pendingProposals, warningLine } from '../format.ts';
+import { claimCounts, describeEvent, eventLine, pendingProposals, warningLine } from '../format.ts';
 import { EXIT } from '../io.ts';
-import { CliExit, fail, openLog, parseCount, projectRoot, requireHuman, say, splitList, type Env } from '../human.ts';
+import { CliExit, fail, openLog, parseCount, projectRoot, requireHuman, say, sayJson, splitList, type Env } from '../human.ts';
 
 const INTEGRITY_LINE = 'integrity check FAILED — the log was edited outside cws (run `cws verify`)';
 
@@ -30,9 +30,25 @@ async function init(env: Env, title: string[]): Promise<void> {
   );
 }
 
-async function status(env: Env): Promise<void> {
+function statusJson(env: Env, log: EventLog): void {
+  const state = log.state;
+  const active = state.sessions.find((s) => s.id === state.activeSessionId);
+  const top = nextSteps(state, 1)[0];
+  sayJson(env, {
+    title: state.title,
+    phase: state.phase,
+    session: active ? { id: active.id, goal: active.goal } : null,
+    counts: { notes: state.notes.length, claims: state.claims.length, decisions: state.decisions.length, pendingProposals: pendingProposals(state).length },
+    integrity: log.integrity.ok ? { ok: true } : { ok: false, brokenAtSeq: log.integrity.brokenAtSeq },
+    warnings: assess(state).map((w) => ({ severity: w.severity, code: w.code, message: w.message, refs: w.refs })),
+    next: top ? { purpose: top.purpose, title: top.title, reason: top.reason, refs: top.refs } : null,
+  });
+}
+
+async function status(env: Env, opts: { json?: boolean } = {}): Promise<void> {
   const log = await openLog(env);
   const state = log.state;
+  if (opts.json === true) return statusJson(env, log);
   const lines = statusLines(state);
   if (!log.integrity.ok) lines.push(INTEGRITY_LINE);
   const warnings = assess(state);
@@ -53,10 +69,15 @@ async function verify(env: Env): Promise<number> {
   return EXIT.INTEGRITY;
 }
 
-async function logCommand(env: Env, opts: { limit?: string; session?: string }): Promise<void> {
+async function logCommand(env: Env, opts: { limit?: string; session?: string; json?: boolean }): Promise<void> {
   const log = await openLog(env);
   let events = log.events.filter((e) => opts.session === undefined || e.sessionId === opts.session);
   if (opts.limit !== undefined) events = events.slice(-parseCount(env, opts.limit, '--limit'));
+  if (opts.json === true) {
+    return sayJson(env, {
+      events: events.map((e) => ({ seq: e.seq, id: e.id, at: e.at, actor: e.actor, type: e.type, summary: describeEvent(e) })),
+    });
+  }
   say(env, ...events.map(eventLine));
 }
 
@@ -71,7 +92,11 @@ async function installCommand(env: Env, opts: { targets?: string }): Promise<voi
 
 export function registerProject(program: Command, env: Env): void {
   program.command('init <title...>').description('start a project here').action((t: string[]) => init(env, t));
-  program.command('status').description('where things stand').action(() => status(env));
+  program
+    .command('status')
+    .description('where things stand')
+    .option('--json', 'machine-readable output (see docs/cli-json.md)')
+    .action((o: { json?: boolean }) => status(env, o));
   program
     .command('verify')
     .description('check the event log for tampering')
@@ -84,7 +109,8 @@ export function registerProject(program: Command, env: Env): void {
     .description('show recorded events')
     .option('--limit <n>', 'only the last n events')
     .option('--session <id>', 'only events of one session')
-    .action((o: { limit?: string; session?: string }) => logCommand(env, o));
+    .option('--json', 'machine-readable output (see docs/cli-json.md)')
+    .action((o: { limit?: string; session?: string; json?: boolean }) => logCommand(env, o));
   program
     .command('install-agents')
     .description('write AGENTS.md and per-tool prompt wrappers')
