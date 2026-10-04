@@ -9,7 +9,7 @@ import { test } from 'node:test';
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const checker = path.join(repository, 'scripts/check-repo-structure.mjs');
 
-test('repository structure checker accepts every node:-prefixed builtin', () => {
+function checkFixture(extraFiles = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'cws-structure-'));
   try {
     for (const file of [
@@ -38,15 +38,36 @@ test('repository structure checker accepts every node:-prefixed builtin', () => 
       dependencies: {},
     }));
     cpSync(checker, path.join(root, 'scripts/check-repo-structure.mjs'));
+    for (const [file, contents] of Object.entries(extraFiles)) {
+      const fullPath = path.join(root, file);
+      mkdirSync(path.dirname(fullPath), { recursive: true });
+      writeFileSync(fullPath, contents);
+    }
 
-    const result = spawnSync(process.execPath, ['scripts/check-repo-structure.mjs'], {
+    return spawnSync(process.execPath, ['scripts/check-repo-structure.mjs'], {
       cwd: root,
       encoding: 'utf8',
     });
-
-    assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stdout, /Repo structure check passed/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+test('repository structure checker accepts every node:-prefixed builtin', () => {
+  const result = checkFixture({
+    'tests/builtin-import.mjs': "import { test } from 'node:test';\n",
+  });
+
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /Repo structure check passed/);
+});
+
+test('repository structure checker permits only the ADR-authorized nested manifest', () => {
+  const allowed = checkFixture({ 'web/package.json': '{}\n' });
+  const forbidden = checkFixture({ 'other/package.json': '{}\n' });
+  const forbiddenLock = checkFixture({ 'web/package-lock.json': '{}\n' });
+
+  assert.equal(allowed.status, 0, allowed.stdout + allowed.stderr);
+  assert.match(forbidden.stderr, /nested package manifest is not allowed: other\/package\.json/);
+  assert.match(forbiddenLock.stderr, /nested or duplicate lockfile is not allowed: web\/package-lock\.json/);
 });
