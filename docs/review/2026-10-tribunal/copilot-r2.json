@@ -1,0 +1,21 @@
+{
+  "head": "copilot",
+  "findings": [
+    {
+      "id": "P-7",
+      "component": "integrations-exec",
+      "title": "OCR error diagnostics can echo credential-shaped child stderr",
+      "cwe": "CWE-532",
+      "claim": "There exists a failed OCR child process whose stderr contains a credential-shaped value and whose propagated error message contains that value verbatim.",
+      "location": "src/integrations/ocr.ts:239-242",
+      "witness": "node --import tsx --test tests/redteam-copilot/ocr-stderr-redaction.test.ts",
+      "witnessRan": true,
+      "observed": "The witness fails: ocrPreview rejects with an error whose message contains the fake credential emitted on stderr.",
+      "invariant": "new: child-process diagnostics are redacted before being surfaced",
+      "likelihood": 4,
+      "impact": 3,
+      "fix": "Redact the child-process diagnostic before including it in the thrown error.",
+      "status": "proposed"
+    }
+  ]
+}

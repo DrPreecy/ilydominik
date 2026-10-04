@@ -53,13 +53,15 @@ Every wrapper says the same thing: run `cws context <purpose>` and record result
 
 ## 7. Out Of Scope For This MVP
 
-MCP server, multi-project workspace view, hierarchical work structure (workstream/objective/task) as entities, dependency graph beyond `derivedFrom`/`links`, UI. All of these remain possible on top of the event log.
+MCP server, multi-project workspace view, hierarchical work structure (workstream/objective/task) as entities, dependency graph beyond `derivedFrom`/`links`. UI is planned as a read-only dashboard (see ADR 0003). All of these remain possible on top of the event log.
 
 ## 8. Integrations
 
 CWS runs outside tools; it does not bundle them. Every call passes an argument list to a named executable, never a shell, with a timeout and an output cap, and the answer is validated before it is used (`src/integrations/exec.ts`).
 
 - **`cws doctor`** reports the host kind, whether a project exists, the integration settings, the resolved sandbox mode, and every tool with version and path. Missing tools are not errors.
+- **`cws ai`** connects CWS with Gemini via the official `@google/genai` SDK using a local `GEMINI_API_KEY`, operating strictly as actor `ai:gemini`. It constructs context packs from state, masks secrets, and validates structured outputs (notes, claims, proposals) against schemas before appending unconfirmed AI events. Calls are bounded by daily limits, token caps, and explicit one-time privacy consent on the free tier.
+- **`cws sync`** synchronizes event history with Firebase Firestore (`users/{uid}/projects/{projectId}/events/{seq}`). The local log remains canonical; Firestore is a mirror for multi-device sync and read-only dashboard consumption. Push verifies ancestry and halts on history divergence; pull validates schemas and the hash chain before appending. Credentials live in the user's OS configuration directory, never in the repository.
 - **`cws review-code`** asks Open Code Review (delegation mode, no model key) which files a review must cover and which rule applies to each. Coverage is the contract: every listed file ends reviewed or skipped with a reason.
 - **`cws findings ingest`** turns tool output (SARIF 2.1.0, `ocr review --format json`, or CWS's own JSON, at most 10 MB) into `HYPOTHESIS` claims:
   - Findings are always recorded as AI: as `--agent <name>`, or, when a human runs it without `--agent`, as the tool itself. Outside a terminal `--agent` is required.

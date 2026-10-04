@@ -1,25 +1,13 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 const root = process.cwd();
 const write = process.argv.includes('--write');
 const ignoredDirs = new Set(['.git', 'node_modules', 'dist', 'coverage', 'archive', '.cws', 'sessions']);
 const textExts = new Set(['.js', '.mjs', '.ts', '.json', '.md', '.yml', '.yaml', '.toml']);
 const failures = [];
-
-function walk(dir) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (ignoredDirs.has(entry.name)) continue;
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      walk(full);
-      continue;
-    }
-    if (!textExts.has(path.extname(entry.name))) continue;
-    checkFile(full);
-  }
-}
 
 function checkFile(file) {
   const original = fs.readFileSync(file, 'utf8');
@@ -34,7 +22,17 @@ function checkFile(file) {
   }
 }
 
-walk(root);
+const trackedFiles = execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' })
+  .split('\0')
+  .filter(Boolean);
+
+for (const rel of trackedFiles) {
+  const normalized = rel.replace(/\\/g, '/');
+  if (normalized.split('/').some((part) => ignoredDirs.has(part))) continue;
+  if (/^docs\/review\/.+\.json$/.test(normalized)) continue;
+  if (!textExts.has(path.extname(normalized))) continue;
+  checkFile(path.join(root, rel));
+}
 
 if (failures.length) {
   console.error('Formatting issues found. Run `npm run format`.');

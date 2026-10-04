@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { Command, CommanderError } from 'commander';
 import { DomainError } from '../domain/types.ts';
+import { registerAi } from './commands/ai.ts';
 import { registerBackup } from './commands/backup.ts';
 import { registerCapture } from './commands/capture.ts';
 import { registerDecisions } from './commands/decisions.ts';
@@ -14,6 +15,7 @@ import { registerReviewCode } from './commands/review-code.ts';
 import { registerSafety } from './commands/safety.ts';
 import { registerSandbox } from './commands/sandbox.ts';
 import { registerSession } from './commands/session.ts';
+import { registerSync } from './commands/sync.ts';
 import { sanitize } from './format.ts';
 import { CliExit, type Env } from './human.ts';
 import { EXIT, type CliIO } from './io.ts';
@@ -44,6 +46,7 @@ export function buildProgram(env: Env): Command {
   registerDoctor(program, env);
   registerSession(program, env);
   registerCapture(program, env);
+  registerAi(program, env);
   registerGuidance(program, env);
   registerProposals(program, env);
   registerDecisions(program, env);
@@ -52,6 +55,7 @@ export function buildProgram(env: Env): Command {
   registerFindings(program, env);
   registerReviewCode(program, env);
   registerSandbox(program, env);
+  registerSync(program, env);
   // Last: the menu is the root action, and it must not hand its settings down to the commands above.
   registerMenu(program, env, (args) => buildProgram(env).parseAsync(args, { from: 'user' }));
   return program;
@@ -65,9 +69,9 @@ function exitCodeFor(error: unknown, io: CliIO): number {
   return EXIT.ERROR;
 }
 
-export async function runCli(argv: string[], io: CliIO): Promise<number> {
+export async function runCli(argv: string[], io: CliIO, envOverrides?: Partial<Env>): Promise<number> {
   try {
-    await buildProgram({ io }).parseAsync(argv, { from: 'user' });
+    await buildProgram({ io, ...envOverrides }).parseAsync(argv, { from: 'user' });
     return EXIT.OK;
   } catch (error: unknown) {
     return exitCodeFor(error, io);

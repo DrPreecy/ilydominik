@@ -16,7 +16,10 @@ test('root verification commands target root implementation directly', () => {
   assert.equal(scripts.build, 'tsc -p tsconfig.build.json');
   assert.equal(scripts.typecheck, 'tsc --noEmit');
   assert.equal(scripts.coverage, 'c8 --reporter=text --check-coverage --lines 80 --functions 80 --branches 75 npm test');
-  assert.equal(scripts['verify:repo'], 'node scripts/check-repo-structure.mjs');
+  assert.equal(
+    scripts['verify:repo'],
+    'node scripts/check-repo-structure.mjs && corepack pnpm@10.34.6 install --frozen-lockfile --lockfile-only',
+  );
   assert.match(scripts.verify, /npm run verify:repo/);
 });
 

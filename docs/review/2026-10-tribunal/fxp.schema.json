@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fxp.schema.json",
+  "title": "FXP findings report",
+  "description": "Finding eXchange Protocol: the one format all review departments use. No witness, no finding.",
+  "type": "object",
+  "required": ["head", "findings"],
+  "additionalProperties": false,
+  "properties": {
+    "head": { "enum": ["claude", "gemini", "copilot", "codex"] },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "component", "title", "claim", "location", "witness", "invariant", "likelihood", "impact", "status"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Z]{1,3}-[0-9]+$", "description": "e.g. G-12 for Gemini, C-3 for Claude, P-4 for Copilot" },
+          "component": {
+            "enum": [
+              "domain", "store", "safety", "findings", "guidance", "cli-ux", "integrations-exec", "sandbox-openshell",
+              "agents-prompts", "ai-gemini", "cloud-auth", "cloud-sync", "firestore-rules", "core-export", "ci-tooling", "docs", "git-history"
+            ]
+          },
+          "title": { "type": "string", "maxLength": 120 },
+          "cwe": { "type": "string", "pattern": "^CWE-[0-9]+$" },
+          "claim": { "type": "string", "description": "Formal predicate, e.g. ∃ cmd: guard(cmd)=allow ∧ effect(cmd) ∈ Destructive" },
+          "location": { "type": "string", "description": "path:line[-line]" },
+          "witness": { "type": "string", "description": "Executable counterexample: exact command, input, or test code that demonstrates the claim" },
+          "witnessRan": { "type": "boolean", "description": "true only if the author actually executed the witness and saw the claimed result" },
+          "observed": { "type": "string", "description": "What actually happened when the witness ran" },
+          "invariant": { "type": "string", "pattern": "^(I[0-9]{1,2}|new: .+)$" },
+          "likelihood": { "type": "integer", "minimum": 1, "maximum": 5 },
+          "impact": { "type": "integer", "minimum": 1, "maximum": 5 },
+          "fix": { "type": "string" },
+          "status": { "enum": ["proposed", "reproduced", "fixed", "verified", "refuted"] }
+        }
+      }
+    }
+  }
+}

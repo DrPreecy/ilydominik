@@ -6,6 +6,8 @@ import { builtinModules } from 'node:module';
 const root = process.cwd();
 const failures = [];
 const ignoredDirs = new Set(['.git', 'node_modules', 'dist', 'coverage', 'archive', '.cws', 'sessions']);
+const allowedNestedManifests = new Set(['web/package.json']);
+const lockfiles = new Set(['pnpm-lock.yaml', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'bun.lock', 'bun.lockb']);
 const required = [
   'AGENTS.md',
   'README.md',
@@ -47,8 +49,10 @@ const textFiles = [];
 walk(root, (file) => {
   const rel = path.relative(root, file).replace(/\\/g, '/');
   const base = path.basename(file);
-  if (base === 'package.json' && rel !== 'package.json') failures.push(`nested package manifest is not allowed: ${rel}`);
-  if (/^(pnpm-lock|package-lock|yarn\.lock|bun\.lockb)$/.test(base) && rel !== 'pnpm-lock.yaml') {
+  if (base === 'package.json' && rel !== 'package.json' && !allowedNestedManifests.has(rel)) {
+    failures.push(`nested package manifest is not allowed: ${rel}`);
+  }
+  if (lockfiles.has(base) && rel !== 'pnpm-lock.yaml') {
     failures.push(`nested or duplicate lockfile is not allowed: ${rel}`);
   }
   if (/\.(ts|js|mjs|json|md|yml|yaml)$/.test(rel)) textFiles.push({ file, rel });
@@ -75,7 +79,7 @@ function checkImports(rel, text) {
   const importPattern = /(?:import\s+(?:type\s+)?(?:[^'"]+\s+from\s+)?|export\s+[^'"]+\s+from\s+|import\s*\()\s*['"]([^'"]+)['"]/g;
   for (const match of text.matchAll(importPattern)) {
     const specifier = match[1];
-    if (specifier.startsWith('.') || specifier.startsWith('/') || builtins.has(specifier)) continue;
+    if (specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('node:') || builtins.has(specifier)) continue;
     const pkg = specifier.startsWith('@') ? specifier.split('/').slice(0, 2).join('/') : specifier.split('/')[0];
     if (!declared.has(pkg)) failures.push(`${rel} imports undeclared package: ${pkg}`);
   }

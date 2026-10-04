@@ -2,6 +2,8 @@ import { createHash, randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { computeEventHashSync, GENESIS_HASH, verifyChainSync } from '../domain/hash.ts';
+import type { ChainIntegrity, EventBody } from '../domain/hash.ts';
 import { assertSessionId, newId } from '../domain/ids.ts';
 import { fold, reduce } from '../domain/reducer.ts';
 import { parseEventInput, parseStoredEvent } from '../domain/schema.ts';
@@ -11,16 +13,10 @@ import type { CwsEvent, EventInput, ProjectState } from '../domain/types.ts';
 export const CWS_DIR = '.cws';
 export const EVENTS_FILE = 'events.jsonl';
 const LOCK_FILE = 'lock';
-const GENESIS_HASH = '0'.repeat(64);
 const LOCK_RETRY_MS = 15;
 const LOCK_TIMEOUT_MS = 8000;
 
-export interface Integrity {
-  ok: boolean;
-  brokenAtSeq?: number;
-}
-
-type EventBody = Omit<CwsEvent, 'hash'>;
+export type Integrity = ChainIntegrity;
 
 export { assertSessionId };
 
@@ -34,29 +30,14 @@ export function findProjectRoot(startDir: string): string | null {
   }
 }
 
-/** sha256(prevHash + canonical JSON) with a fixed key order, independent of parse order. */
+const nodeSha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
+
 function computeHash(e: EventBody): string {
-  const canonical = {
-    v: e.v,
-    seq: e.seq,
-    id: e.id,
-    at: e.at,
-    ...(e.sessionId === undefined ? {} : { sessionId: e.sessionId }),
-    type: e.type,
-    actor: e.actor,
-    payload: e.payload,
-    prevHash: e.prevHash,
-  };
-  return createHash('sha256').update(e.prevHash + JSON.stringify(canonical)).digest('hex');
+  return computeEventHashSync(e, nodeSha256);
 }
 
 function checkIntegrity(events: readonly CwsEvent[]): Integrity {
-  let prev = GENESIS_HASH;
-  for (const e of events) {
-    if (e.prevHash !== prev || computeHash(e) !== e.hash) return { ok: false, brokenAtSeq: e.seq };
-    prev = e.hash;
-  }
-  return { ok: true };
+  return verifyChainSync(events, nodeSha256);
 }
 
 function parseLines(raw: string): CwsEvent[] {

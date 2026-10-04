@@ -1,11 +1,13 @@
-import { randomBytes } from 'node:crypto';
 import { DomainError } from './types.ts';
 
 const ID_HEX_LENGTH = 12;
 
 /** `${prefix}_` followed by 12 lowercase hex characters. */
 export function newId(prefix: string): string {
-  return `${prefix}_${randomBytes(ID_HEX_LENGTH / 2).toString('hex')}`;
+  const bytes = new Uint8Array(ID_HEX_LENGTH / 2);
+  globalThis.crypto.getRandomValues(bytes);
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `${prefix}_${hex}`;
 }
 
 /** Session ids name handoff files, so they must be filename-safe on every platform. */

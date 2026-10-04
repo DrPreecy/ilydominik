@@ -1,6 +1,8 @@
 import type { Command } from 'commander';
 import { defaultConfig, loadIntegrations, toolOverride, type IntegrationsConfig, type SandboxMode, type ToolName } from '../../integrations/config.ts';
 import { findExecutable, isBatchShim, runTool, toolVersion, type RunResult } from '../../integrations/exec.ts';
+import { hasGeminiKey, readAiUsage, todayIsoDate } from '../../integrations/gemini.ts';
+import { loadCredentials } from '../../cloud/auth.ts';
 import { EXIT } from '../io.ts';
 import { projectRoot, say, type Env } from '../human.ts';
 
@@ -136,7 +138,16 @@ function toolLine(result: ProbeResult): string {
 
 export function reportLines(
   results: readonly ProbeResult[],
-  ctx: { host: HostKind; configFile: string | null; configProblem?: string; configIgnored?: string; mode: SandboxMode; project: boolean },
+  ctx: {
+    host: HostKind;
+    configFile: string | null;
+    configProblem?: string;
+    configIgnored?: string;
+    mode: SandboxMode;
+    project: boolean;
+    gemini?: { hasKey: boolean; model: string; todayCount: number; dailyLimit: number };
+    cloudSync?: { isLoggedIn: boolean; user?: string; remoteProject?: string };
+  },
 ): string[] {
   const required = results.filter((r) => r.probe.required === true);
   const optional = results.filter((r) => r.probe.required !== true);
@@ -148,6 +159,16 @@ export function reportLines(
     `Integrations:    ${ctx.configFile === null ? 'none' : ctx.configFile} (${settings})`,
     ...(ctx.configIgnored === undefined ? [] : [`Ignored:         ${ctx.configIgnored}`]),
     `Sandbox mode:    ${ctx.mode} — ${MODE_MEANING[ctx.mode]}`,
+    ...(ctx.gemini === undefined
+      ? []
+      : [
+          `Gemini API:      key present: ${ctx.gemini.hasKey ? 'yes' : 'no'} · model: ${ctx.gemini.model} · today's calls: ${ctx.gemini.todayCount}/${ctx.gemini.dailyLimit}`,
+        ]),
+    ...(ctx.cloudSync === undefined
+      ? []
+      : [
+          `Cloud Sync:      logged in: ${ctx.cloudSync.isLoggedIn ? `yes (${ctx.cloudSync.user ?? 'authenticated'})` : 'no'} · remote: ${ctx.cloudSync.remoteProject ?? 'not linked'}`,
+        ]),
     '',
     'Required',
     ...required.map((r) => toolLine(r)),
@@ -183,6 +204,18 @@ export async function doctor(env: Env, opts: { deep?: boolean } = {}): Promise<n
     gateway: config.sandbox.gateway !== undefined,
   });
 
+  const hasKey = hasGeminiKey();
+  const usage = root !== null ? await readAiUsage(root) : { date: '', count: 0 };
+  const today = todayIsoDate();
+  const todayCount = usage.date === today ? usage.count : 0;
+
+  const creds = await loadCredentials(env.credentialsPath);
+  const cloudSync = {
+    isLoggedIn: creds !== null,
+    user: creds?.email ?? creds?.uid,
+    remoteProject: config.sync.projectId,
+  };
+
   const lines = reportLines(results, {
     host,
     configFile: loaded.file,
@@ -190,6 +223,13 @@ export async function doctor(env: Env, opts: { deep?: boolean } = {}): Promise<n
     ...(loaded.ignored === undefined ? {} : { configIgnored: loaded.ignored }),
     mode,
     project: root !== null,
+    gemini: {
+      hasKey,
+      model: config.gemini.model,
+      todayCount,
+      dailyLimit: config.gemini.dailyCallLimit,
+    },
+    cloudSync,
   });
 
   const missingRequired = results.filter((r) => r.probe.required === true && r.file === null);

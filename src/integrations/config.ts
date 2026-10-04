@@ -19,6 +19,35 @@ export const TOOL_ENV = {
 } as const;
 export type ToolName = keyof typeof TOOL_ENV;
 
+export const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
+export const DEFAULT_DAILY_LIMIT = 20;
+export const DEFAULT_MAX_INPUT_CHARS = 100_000;
+export const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
+
+export interface GeminiConfig {
+  model: string;
+  dailyCallLimit: number;
+  maxInputChars: number;
+  maxOutputTokens: number;
+}
+
+const geminiSchema = z.object({
+  model: z.string().min(1).optional(),
+  dailyCallLimit: z.number().int().min(1).optional(),
+  maxInputChars: z.number().int().min(100).optional(),
+  maxOutputTokens: z.number().int().min(100).optional(),
+});
+
+export interface SyncConfig {
+  projectId?: string;
+  autoSync?: boolean;
+}
+
+const syncSchema = z.object({
+  projectId: z.string().min(1).optional(),
+  autoSync: z.boolean().optional(),
+});
+
 const schema = z.object({
   version: z.literal(1),
   sandbox: z
@@ -28,6 +57,8 @@ const schema = z.object({
       gateway: z.string().min(1).optional(),
     })
     .optional(),
+  gemini: geminiSchema.optional(),
+  sync: syncSchema.optional(),
   /** accepted so older files still load, but never used */
   tools: z.record(z.string(), z.unknown()).optional(),
 });
@@ -35,6 +66,8 @@ const schema = z.object({
 export interface IntegrationsConfig {
   version: 1;
   sandbox: { mode: SandboxMode; wslDistro?: string; gateway?: string };
+  gemini: GeminiConfig;
+  sync: SyncConfig;
 }
 
 export interface LoadedConfig {
@@ -47,7 +80,17 @@ export interface LoadedConfig {
 }
 
 export function defaultConfig(): IntegrationsConfig {
-  return { version: 1, sandbox: { mode: 'auto' } };
+  return {
+    version: 1,
+    sandbox: { mode: 'auto' },
+    gemini: {
+      model: DEFAULT_GEMINI_MODEL,
+      dailyCallLimit: DEFAULT_DAILY_LIMIT,
+      maxInputChars: DEFAULT_MAX_INPUT_CHARS,
+      maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+    },
+    sync: {},
+  };
 }
 
 export function configPath(rootDir: string): string {
@@ -65,6 +108,22 @@ function ignoredTools(tools: Record<string, unknown> | undefined): string | unde
   if (keys.length === 0) return undefined;
   const vars = Object.values(TOOL_ENV).join(', ');
   return `${keys.map((key) => `tools.${key}`).join(', ')} ignored: a repository file cannot choose programs for cws to run; set ${vars} instead`;
+}
+
+export async function updateSyncConfig(rootDir: string, syncUpdates: Partial<SyncConfig>): Promise<void> {
+  const file = configPath(rootDir);
+  let current: Record<string, unknown> = { version: 1 };
+  try {
+    const raw = await fs.readFile(file, 'utf8');
+    current = JSON.parse(raw);
+  } catch {
+    // start fresh
+  }
+  const existingSync =
+    typeof current.sync === 'object' && current.sync !== null ? (current.sync as Record<string, unknown>) : {};
+  current.sync = { ...existingSync, ...syncUpdates };
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, JSON.stringify(current, null, 2) + '\n');
 }
 
 export async function loadIntegrations(rootDir: string): Promise<LoadedConfig> {
@@ -100,6 +159,16 @@ export async function loadIntegrations(rootDir: string): Promise<LoadedConfig> {
         mode: data.sandbox?.mode ?? 'auto',
         ...(data.sandbox?.wslDistro === undefined ? {} : { wslDistro: data.sandbox.wslDistro }),
         ...(data.sandbox?.gateway === undefined ? {} : { gateway: data.sandbox.gateway }),
+      },
+      gemini: {
+        model: data.gemini?.model ?? DEFAULT_GEMINI_MODEL,
+        dailyCallLimit: data.gemini?.dailyCallLimit ?? DEFAULT_DAILY_LIMIT,
+        maxInputChars: data.gemini?.maxInputChars ?? DEFAULT_MAX_INPUT_CHARS,
+        maxOutputTokens: data.gemini?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+      },
+      sync: {
+        ...(data.sync?.projectId ? { projectId: data.sync.projectId } : {}),
+        ...(data.sync?.autoSync !== undefined ? { autoSync: data.sync.autoSync } : {}),
       },
     },
   };
