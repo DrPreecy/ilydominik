@@ -540,7 +540,7 @@ describe('cli: guided menu (`cws` with no arguments)', () => {
 describe('cli: safe-run guard', () => {
   it('checks ordinary commands without executing them', async () => {
     const io = mkAgent();
-    assert.equal(await cli(io, 'safe-run', '--check', '--', 'npm', 'test'), EXIT.OK);
+    assert.equal(await cli(io, 'safe-run', '--check', '--', 'tsc', '--noEmit'), EXIT.OK);
     assert.match(text(io), /allowed command/);
   });
 

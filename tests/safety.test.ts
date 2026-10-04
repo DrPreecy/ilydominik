@@ -16,7 +16,7 @@ const assess = (args: string[]) => assessCommandSafety(args, { cwd, projectRoot:
 
 describe('command safety guard', () => {
   it('allows ordinary non-shell commands', () => {
-    const result = assess(['npm', 'test']);
+    const result = assess(['tsc', '--noEmit']);
     assert.equal(result.ok, true);
     assert.equal(result.destructive, false);
   });
@@ -282,7 +282,8 @@ describe('command safety guard', () => {
     for (const args of [['npm', 'exec', 'rimraf', '/'], ['npm', 'x', 'rimraf'], ['pnpm', 'dlx', 'rimraf'], ['yarn', 'dlx', 'rimraf']]) {
       assert.equal(assess(args).ok, false, args.join(' '));
     }
-    assert.equal(assess(['npm', 'run', 'build']).ok, true);
+    assert.equal(assess(['npm', 'run', 'build']).ok, false, 'npm scripts run code the guard cannot see');
+    assert.equal(assess(['npm', 'ls', 'exec']).ok, true, 'only the subcommand counts, not a package name');
   });
 
   it('blocks find with actions and robocopy mirroring', () => {
