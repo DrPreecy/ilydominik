@@ -31,6 +31,9 @@
     "cws": "node --import tsx src/cli/main.ts"
   },
   "license": "MIT",
+  "engines": {
+    "node": ">=22.18.0"
+  },
   "dependencies": {
     "@google/genai": "^2.27.0",
     "commander": "^15.0.0",

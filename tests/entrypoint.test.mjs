@@ -10,6 +10,7 @@ test('root package is the canonical cws package', () => {
   assert.deepEqual(manifest.bin, { cws: 'dist/cli/main.js' });
   assert.equal(manifest.files.includes('dist'), true);
   assert.equal(manifest.files.includes('prompts'), true);
+  assert.equal(manifest.engines.node, '>=22.18.0');
 });
 
 test('root verification commands target root implementation directly', () => {
