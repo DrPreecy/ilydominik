@@ -3,13 +3,16 @@ import { spawn } from 'node:child_process';
 import { randomInt } from 'node:crypto';
 import readline from 'node:readline/promises';
 import { runCli } from './app.ts';
+import { systemToolPath } from '../integrations/exec.ts';
 import type { CliIO } from './io.ts';
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const CODE_LENGTH = 3;
+/** Far above any real input (findings files are capped at 10 MB of text); stops `yes | cws dump -` from eating memory. */
+const MAX_STDIN_BYTES = 40 * 1024 * 1024;
 
 function clipboardCommand(): [string, string[]] {
-  if (process.platform === 'win32') return ['clip', []];
+  if (process.platform === 'win32') return [systemToolPath('clip'), []];
   if (process.platform === 'darwin') return ['pbcopy', []];
   return ['xclip', ['-selection', 'clipboard']];
 }
@@ -42,7 +45,12 @@ async function ask(question: string): Promise<string> {
 
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk as Uint8Array));
+  let size = 0;
+  for await (const chunk of process.stdin) {
+    size += (chunk as Uint8Array).length;
+    if (size > MAX_STDIN_BYTES) throw new Error(`input is larger than ${MAX_STDIN_BYTES / (1024 * 1024)} MB; give a smaller file`);
+    chunks.push(Buffer.from(chunk as Uint8Array));
+  }
   return Buffer.concat(chunks).toString('utf8');
 }
 

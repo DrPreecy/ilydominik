@@ -4,13 +4,15 @@
  * Rules, in the spirit of `src/safety/command-guard.ts`:
  *  - an argument list, never a joined command line, and never a shell
  *  - a hard timeout and an output cap; a timeout kills the whole process tree
- *  - the environment is inherited; real isolation comes from the sandbox, not from here
+ *  - the child gets an allowlisted environment (`childEnv`): PATH, HOME, temp and locale variables,
+ *    never API keys or tokens. Real isolation still comes from the sandbox, not from here
+ *  - Windows system tools (taskkill, clip) are started by their System32 path, not looked up by name
  *
  * Windows batch shims (`.cmd`/`.bat`) are refused instead of being run through cmd.exe,
  * because quoting there cannot be made safe. On Windows use WSL (see `./wsl.ts`).
  */
 
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
@@ -22,6 +24,59 @@ const WINDOWS_BATCH = /\.(cmd|bat)$/i;
 const NODE_SCRIPT = /\.(mjs|cjs|js)$/i;
 /** how long a process tree gets after SIGTERM before SIGKILL */
 const KILL_GRACE_MS = 2_000;
+/** setTimeout turns anything above 2^31-1 ms into 1 ms; that would kill the child at once. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/** Variables a child may inherit. Matching is case-insensitive because Windows env names are. */
+const BASE_ENV = new Set([
+  'PATH', 'PATHEXT', 'HOME', 'HOMEDRIVE', 'HOMEPATH', 'USERPROFILE', 'USER', 'USERNAME', 'LOGNAME', 'SYSTEMROOT', 'SYSTEMDRIVE',
+  'WINDIR', 'COMSPEC', 'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LANGUAGE', 'TZ', 'TERM', 'COLORTERM', 'NO_COLOR', 'FORCE_COLOR',
+  'SHELL', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432', 'COMMONPROGRAMFILES',
+  'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS', 'OS', 'DISPLAY', 'WAYLAND_DISPLAY', 'WSL_DISTRO_NAME', 'WSL_INTEROP', 'WSLENV',
+  'DOCKER_HOST', 'DOCKER_CONTEXT',
+]);
+/** Locale, XDG directories, CWS settings and OpenShell's own settings (its gateway credentials are for openshell). */
+const BASE_ENV_PREFIXES = ['LC_', 'XDG_', 'OPENSHELL_', 'CWS_'];
+const NEVER_SECRET_PREFIX = 'OPENSHELL_';
+const SECRET_NAME = /KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|COOKIE|AUTH|SESSION/i;
+
+export interface ChildEnvOptions {
+  /** extra variable names the caller names on purpose (case-insensitive), secret-looking or not */
+  names?: readonly string[];
+  /** extra name prefixes, still subject to the secret filter */
+  prefixes?: readonly string[];
+}
+
+/**
+ * The environment a child process gets: an allowlist, not a copy. `GEMINI_API_KEY`, `GITHUB_TOKEN`,
+ * `AWS_*` and every other name that looks like a credential stay in the parent.
+ */
+export function childEnv(source: NodeJS.ProcessEnv = process.env, options: ChildEnvOptions = {}): NodeJS.ProcessEnv {
+  const named = new Set((options.names ?? []).map((name) => name.toUpperCase()));
+  const prefixes = [...BASE_ENV_PREFIXES, ...(options.prefixes ?? [])].map((prefix) => prefix.toUpperCase());
+  const result: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(source)) {
+    if (value === undefined) continue;
+    const upper = name.toUpperCase();
+    const allowed = named.has(upper) || BASE_ENV.has(upper) || prefixes.some((prefix) => upper.startsWith(prefix));
+    if (!allowed) continue;
+    if (!named.has(upper) && !upper.startsWith(NEVER_SECRET_PREFIX) && SECRET_NAME.test(name)) continue;
+    result[name] = value;
+  }
+  return result;
+}
+
+export function clampTimeout(timeoutMs: number | undefined, fallback: number): number {
+  if (timeoutMs === undefined || Number.isNaN(timeoutMs)) return fallback;
+  return Math.min(Math.max(1, Math.floor(timeoutMs)), MAX_TIMER_MS);
+}
+
+/** A Windows system tool by absolute path, so a `taskkill.exe` planted in the project is never started. */
+export function systemToolPath(name: string, platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string {
+  if (platform !== 'win32') return name;
+  const root = env.SystemRoot ?? env.SYSTEMROOT ?? env.windir ?? 'C:\\Windows';
+  return path.win32.join(root, 'System32', `${name}.exe`);
+}
 
 export interface RunOptions {
   cwd?: string;
@@ -82,7 +137,10 @@ export function findExecutable(
   if (command.includes('/') || command.includes('\\')) return isFile(command) ? command : null;
 
   const dirs = (env.PATH ?? env.Path ?? '').split(path.delimiter).filter((dir) => dir !== '');
-  const exts = platform === 'win32' ? (env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter((x) => x !== '') : [''];
+  const pathExt = platform === 'win32' ? (env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter((x) => x !== '') : [];
+  // `node.exe` already names its file; `node` needs an extension appended.
+  const named = pathExt.some((ext) => command.toLowerCase().endsWith(ext.toLowerCase()));
+  const exts = platform === 'win32' ? [...(named ? [''] : []), ...pathExt] : [''];
   let shim: string | null = null;
   for (const dir of dirs) {
     for (const ext of exts) {
@@ -132,11 +190,11 @@ function unusableReason(command: string, args: readonly string[], platform: Node
 }
 
 /** Kills `child` and everything it started: `taskkill /T` on Windows, the process group elsewhere. */
-function killTree(child: ChildProcessWithoutNullStreams): void {
+function killTree(child: ChildProcess): void {
   const pid = child.pid;
   if (pid === undefined) return;
   if (process.platform === 'win32') {
-    const killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { shell: false, windowsHide: true, stdio: 'ignore' });
+    const killer = spawn(systemToolPath('taskkill'), ['/pid', String(pid), '/T', '/F'], { shell: false, windowsHide: true, stdio: 'ignore' });
     killer.on('error', () => child.kill('SIGKILL'));
     return;
   }
@@ -177,7 +235,7 @@ export function runTool(command: string, args: readonly string[] = [], opts: Run
     try {
       child = spawn(command, [...args], {
         ...(opts.cwd === undefined ? {} : { cwd: opts.cwd }),
-        env: opts.env ?? process.env,
+        env: opts.env ?? childEnv(),
         shell: false,
         windowsHide: true,
         // its own process group on POSIX, so a timeout reaches grandchildren too
@@ -217,7 +275,7 @@ export function runTool(command: string, args: readonly string[] = [], opts: Run
     const timer = setTimeout(() => {
       timedOut = true;
       killTree(child);
-    }, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    }, clampTimeout(opts.timeoutMs, DEFAULT_TIMEOUT_MS));
 
     child.on('error', (error: Error) => {
       clearTimeout(timer);
@@ -240,6 +298,49 @@ export function runTool(command: string, args: readonly string[] = [], opts: Run
     });
 
     child.stdin.end(opts.stdin ?? '');
+  });
+}
+
+export interface InheritedOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+}
+
+export interface InheritedResult {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  timedOut: boolean;
+}
+
+/**
+ * Runs a program with the terminal's stdin/stdout/stderr, a deadline, and a tree kill on timeout.
+ * Rejects when the program cannot be started. On POSIX the child leads its own process group only
+ * without a terminal, because a background group cannot read the terminal.
+ */
+export function runInherited(command: string, args: readonly string[], opts: InheritedOptions = {}): Promise<InheritedResult> {
+  return new Promise<InheritedResult>((resolve, reject) => {
+    const child = spawn(command, [...args], {
+      ...(opts.cwd === undefined ? {} : { cwd: opts.cwd }),
+      env: opts.env ?? childEnv(),
+      shell: false,
+      windowsHide: true,
+      detached: process.platform !== 'win32' && !process.stdin.isTTY,
+      stdio: 'inherit',
+    });
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killTree(child);
+    }, clampTimeout(opts.timeoutMs, DEFAULT_TIMEOUT_MS));
+    child.on('error', (error: Error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal, timedOut });
+    });
   });
 }
 
