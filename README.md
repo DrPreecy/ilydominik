@@ -4,6 +4,12 @@ You think. CWS keeps the structure: your raw thoughts, what you said vs. what an
 
 Intent: [starttoughts.md](starttoughts.md). Spec: [docs/spec.md](docs/spec.md). Workflow (as blocks): [docs/workflow.md](docs/workflow.md).
 
+## Quick start
+
+1. Run `cws` in a terminal and choose **Start a project in this folder** from the menu.
+2. Capture a thought: `cws dump "whatever is in your head, messy is fine"`.
+3. Review anything an AI proposes with `cws review`; you decide what becomes part of the project.
+
 ## Install
 
 ```bash
@@ -16,7 +22,7 @@ npm link
 
 No local Docker or strong PC needed. On GitHub, choose **Code → Codespaces → Create codespace**. The setup in [.devcontainer](.devcontainer) installs CWS (`cws` is on the PATH), Docker, and the Claude Code, Codex, Gemini and Copilot command-line tools, so every agent works the same way.
 
-- **Sign in once per new Codespace.** No API keys: CWS expects you to use the subscriptions you already have. `gh auth login` for Copilot, then `claude`, `codex login` and `gemini` for the others. A Codespace keeps its sign-in until it is deleted, so a fresh one needs a fresh sign-in.
+- **Agent logins are separate from CWS cloud features.** Sign in to the agent CLIs you use (`gh auth login` for Copilot, then the relevant `claude`, `codex login` or `gemini` flow). Local CWS works offline without Google services. The optional `cws ai` Gemini integration needs `GEMINI_API_KEY` from Google AI Studio and asks for one-time privacy consent before sending context; optional Firestore sync requires a separate `cws login`. See [Google setup](docs/google-setup.md). Never store keys or tokens in the repository or `.cws/`.
 - Run `cws doctor` to see what this machine has: host kind, project memory, and every tool with its version.
 - Stop the Codespace when you are done; unused Codespaces are deleted after 30 days.
 - Your memory lives in `.cws/`, which is not in git. `cws session end` saves a backup to `.cws/backups/` there; download it (right-click → Download).
@@ -27,15 +33,6 @@ No local Docker or strong PC needed. On GitHub, choose **Code → Codespaces →
 | restore it in a new Codespace | `cws import my-project.json.gz` |
 
 Import only adds newer events. If both sides changed, or local memory fails its integrity check, it stops; `--replace` overwrites local memory after you confirm (also to roll back to an older backup).
-
-## Start a Project
-
-```bash
-cws init "My idea"
-cws install-agents
-cws session start "what I want to get out of today"
-cws dump "whatever is in my head, messy is fine"
-```
 
 ## Daily Loop
 
@@ -79,15 +76,24 @@ Without OpenShell, `cws sandbox status` says so and everything else keeps workin
 ## Rules
 
 - **AI suggests, you decide.** Agents run commands with `--agent <name>`. They can record interpretations, assumptions, open questions, and evidence, all marked as unconfirmed AI. Facts, your statements, decisions, status changes, and phase changes only happen when you accept them.
-- **Warnings, not walls.** CWS never blocks you. When you go ahead despite open risks, it asks why, records that as a decision, and reminds you until the risk is resolved.
+- **Warnings, not walls.** Guidance warnings do not block project decisions. Some CLI operations still require human confirmation, and `safe-run` or a sandbox can refuse commands. When you go ahead despite open risks, CWS asks why, records that as a decision, and reminds you until the risk is resolved.
 - **Nothing is lost.** Everything is an append-only log in `.cws/events.jsonl`. `cws log` shows history; `cws verify` detects edits to past entries.
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Command completed successfully. |
+| `1` | General command error. |
+| `2` | A human action is required, or an explicit risk override is needed. |
+| `3` | The event log failed its integrity check. |
 
 ## Known Limits
 
 - An AI with shell access could forge entries. CWS makes that deliberate and visible with challenge codes and a hash-chained log, not impossible.
 - Human commands need a real terminal. Piping text into `cws dump -` as a human is refused; type it or pass it as an argument.
 - There is no MCP server yet; agents use the CLI in their terminal.
-- `safe-run` is an advisory native-executable guard, not a sandbox. It blocks shells, interpreters and wrappers (`node -e`, `npx`, `env`, `wsl`, ...), destructive git forms (`reset --hard`, force push, `clean`, aliases), deleting or moving anything outside the project or inside `.git` and `.cws`, but it cannot see what an allowed program does, for example an edited npm script. `safe-run --check` refuses `;`, `|`, `<`, `>` even inside an argument, because a checked command is often retyped into a shell; `safe-run -- ...` itself runs without a shell, so there such characters in a message are plain text.
+- `safe-run` applies layered advisory checks to launchers, command-specific destructive options, and filesystem targets, then runs an allowed executable without a shell. It is not a sandbox and is not complete: it cannot inspect an allowed program's effects or every command feature (for example, Git's `rebase -x`, `bisect run`, and `submodule foreach` can run other commands). `safe-run --check` refuses `;`, `|`, `<`, `>` even inside an argument, because a checked command is often retyped into a shell; in `safe-run -- ...` these are plain argument text. Use `cws sandbox run` with OpenShell for isolation; without OpenShell there is no sandbox boundary.
 - Tool paths come only from `CWS_TOOL_OCR`, `CWS_TOOL_OPENSHELL` and `CWS_TOOL_PROVER`, never from files in the repository.
 
 ## Develop
