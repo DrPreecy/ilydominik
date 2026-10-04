@@ -1,5 +1,3 @@
-Ich würde die README jetzt als **Project Constitution** formulieren: nicht als Marketingtext, sondern als Dokument, das sowohl die Produktidee als auch die spätere Zusammenarbeit mit Copilot verbindlich beschreibt.
-
 # Cognitive Work System
 
 > An adaptive, human-led cognitive work environment for turning complex, ambiguous ideas into structured, tested, executable, and continuously evolving projects.
