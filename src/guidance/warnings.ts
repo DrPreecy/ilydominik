@@ -1,5 +1,5 @@
 import { PHASES } from '../domain/types.ts';
-import { shorten } from '../findings/types.ts';
+import { shorten } from '../findings/redact.ts';
 import type { Claim, IntendedAction, Phase, ProjectState, Warning, WarningSeverity } from '../domain/types.ts';
 
 const LATE_PHASES: readonly Phase[] = ['IMPLEMENTATION', 'LAUNCH', 'POST_LAUNCH'];
