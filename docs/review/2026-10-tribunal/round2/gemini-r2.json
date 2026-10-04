@@ -1,0 +1,70 @@
+{
+ "head": "gemini",
+ "findings": [
+  {
+   "claim": "checkImports ignores 'node:test' because 'builtins.has' includes 'node:test' via node:module builtinModules",
+   "component": "ci-tooling",
+   "id": "G-101",
+   "impact": 5,
+   "invariant": "new: P-1 claims node:test is rejected, but it is explicitly allowed",
+   "likelihood": 5,
+   "location": "scripts/check-repo-structure.mjs:78",
+   "status": "refuted",
+   "title": "REFUTE P-1: verify:repo rejects Node's built-in test module",
+   "witness": "if (specifier.startsWith('.') || specifier.startsWith('/') || builtins.has(specifier)) continue;",
+   "witnessRan": false
+  },
+  {
+   "claim": "describeProposal omits supersedes and kind fields for decision proposals, hiding critical transition info from the human reviewer",
+   "component": "cli-ux",
+   "id": "G-201",
+   "impact": 4,
+   "invariant": "new: Human reviewer must see all fields of a decision before approval",
+   "likelihood": 4,
+   "location": "src/cli/describe.ts:39-46",
+   "status": "proposed",
+   "title": "cli-ux: describeProposal silently drops supersedes and kind for DECISION_RECORDED",
+   "witness": "node --import tsx -e \"import { describeProposal } from './src/cli/describe.ts'; console.log(describeProposal({ id: 'p', actor: { kind: 'ai', agent: 'test' }, status: 'PENDING', at: '', item: { kind: 'decision', title: 'T', options: ['A'], selected: 'A', rationale: 'R', supersedes: 'old-decision', kind: 'PROCEED_UNDER_UNCERTAINTY' } }, { claims: [], decisions: [], notes: [] }))\"",
+   "witnessRan": false
+  },
+  {
+   "claim": "ProposedItem's 'decision' variant is missing supersedes and kind, making it impossible for AI agents to propose replacing a decision or proceeding under uncertainty",
+   "component": "domain",
+   "id": "G-202",
+   "impact": 3,
+   "invariant": "new: AI proposals must be able to express all valid domain mutations, including decision replacements",
+   "likelihood": 5,
+   "location": "src/domain/types.ts:122",
+   "status": "proposed",
+   "title": "domain: ProposedItem for decision lacks supersedes and kind",
+   "witness": "node --import tsx -e \"import { z } from 'zod'; import { ProposedItem } from './src/domain/types.ts'; const p: ProposedItem = { kind: 'decision', title: 'A', options: [], selected: 'A', rationale: '', supersedes: 'old' };\"",
+   "witnessRan": false
+  },
+  {
+   "claim": "unprocessedNotes only checks state.claims.flatMap(c => c.derivedFrom) to mark notes as used, ignoring state.decisions which can also link notes",
+   "component": "guidance",
+   "id": "G-203",
+   "impact": 3,
+   "invariant": "new: Notes used in decisions are processed and should not trigger the unprocessed-notes rule",
+   "likelihood": 4,
+   "location": "src/guidance/rules.ts:77-78",
+   "status": "proposed",
+   "title": "guidance: unprocessed-notes rule ignores notes linked to decisions",
+   "witness": "node --import tsx -e \"import { RULES } from './src/guidance/rules.ts'; console.log(RULES.find(r => r.id === 'unprocessed-notes').evaluate({ notes: [{ id: 'n1', text: 'note', phase: 'EXPLORATION', actor: { kind: 'human' }, at: '' }], claims: [], decisions: [{ id: 'd1', title: 'd', options: [], selected: '', rationale: '', links: ['n1'], phase: 'EXPLORATION', at: '', kind: 'NORMAL', rejected: [] }], proposals: [], phase: 'UNDERSTANDING', id: '', title: '', sessions: [] }, []))\"",
+   "witnessRan": false
+  },
+  {
+   "claim": "The isEmpty helper only checks notes, claims, and proposals, meaning a project with only decisions is treated as completely empty",
+   "component": "guidance",
+   "id": "G-204",
+   "impact": 2,
+   "invariant": "new: A project with recorded decisions is not empty",
+   "likelihood": 4,
+   "location": "src/guidance/rules.ts:46",
+   "status": "proposed",
+   "title": "guidance: isEmpty ignores state.decisions, triggering empty-project incorrectly",
+   "witness": "node --import tsx -e \"import { RULES } from './src/guidance/rules.ts'; console.log(RULES.find(r => r.id === 'empty-project').evaluate({ notes: [], claims: [], proposals: [], decisions: [{ id: 'd1', title: 't', options: [], selected: '', rationale: '', links: [], phase: 'EXPLORATION', at: '', kind: 'NORMAL', rejected: [] }], phase: 'EXPLORATION', id: '', title: '', sessions: [] }, []))\"",
+   "witnessRan": false
+  }
+ ]
+}
