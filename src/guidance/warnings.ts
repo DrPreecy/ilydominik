@@ -1,7 +1,7 @@
 import { PHASES } from '../domain/types.ts';
+import { shorten } from '../findings/redact.ts';
 import type { Claim, IntendedAction, Phase, ProjectState, Warning, WarningSeverity } from '../domain/types.ts';
 
-const MAX_TEXT = 80;
 const LATE_PHASES: readonly Phase[] = ['IMPLEMENTATION', 'LAUNCH', 'POST_LAUNCH'];
 const SEVERITY_ORDER: Record<WarningSeverity, number> = { serious: 0, caution: 1, info: 2 };
 const PHASE_WARNING_CODES = ['UNTESTED_RISK', 'FALSIFIED_PREMISE', 'OPEN_CRITICAL_UNKNOWN', 'PHASE_SKIP', 'OVERRIDE_UNRESOLVED'];
@@ -25,10 +25,8 @@ export function awaitsReview(c: Claim): boolean {
   return c.createdBy.kind === 'ai' && !c.confirmed && !VERDICTS.includes(c.status);
 }
 
-export function shorten(text: string, max = MAX_TEXT): string {
-  const flat = text.replace(/\s+/g, ' ').trim();
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
-}
+/** The shared redacting helper; re-exported because callers import it from here. */
+export { shorten };
 
 export function quoteList(claims: readonly Claim[]): string {
   return claims.map((c) => `"${shorten(c.text)}"`).join(', ');

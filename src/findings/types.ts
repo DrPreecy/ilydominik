@@ -9,6 +9,10 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import type { Risk } from '../domain/types.ts';
+import { redactSecrets } from './redact.ts';
+
+/** Redaction lives in `redact.ts`; it is re-exported here because findings code has always imported it from this module. */
+export { maskSecrets, redactSecrets, shorten, REDACTED } from './redact.ts';
 
 export const SEVERITIES = ['critical', 'high', 'medium', 'low', 'note'] as const;
 export type Severity = (typeof SEVERITIES)[number];
@@ -25,6 +29,7 @@ export interface Finding {
   /** true when the path points outside the project (absolute elsewhere, or `../`) */
   external?: boolean;
   startLine?: number;
+  startColumn?: number;
   endLine?: number;
   /** redacted excerpt of the code the finding is about */
   snippet?: string;
@@ -83,7 +88,7 @@ const MARKER = 'cws-finding:';
 export const FINDING_MARKER = MARKER;
 export const FINDING_MARKER_RESERVED = `error: claim text may not start with "${MARKER}"; that prefix is reserved for \`cws findings ingest\``;
 /** Exactly what `findingClaimText` writes at the start of a claim. */
-const CLAIM_PREFIX = new RegExp(`^${MARKER}([0-9a-f]{16}) \\[(?:${SEVERITIES.join('|')})\\] `);
+const CLAIM_PREFIX = new RegExp(`^${MARKER}([0-9a-f]{16}(?:[0-9a-f]{16})?) \\[(?:${SEVERITIES.join('|')})\\] `);
 
 export function findingTag(fingerprint: string): string {
   return `${MARKER}${fingerprint}`;
@@ -99,56 +104,26 @@ function location(finding: Finding): string {
   return `${finding.external === true ? finding.path : normalizePath(finding.path)}${line}`;
 }
 
+/** The message with case, spacing and digits flattened, so rewording noise does not split one issue in two. */
+function messageKey(message: string): string {
+  return message.toLowerCase().replace(/\d+/g, '#').replace(/\s+/g, ' ').trim();
+}
+
 /**
- * Stable across runs for the same issue: tool, rule and place. The message is left
- * out so a reworded tool version does not produce a duplicate claim.
+ * Stable across runs for the same issue: tool, rule, exact place (line, column, end line)
+ * and what was said about it. Two different findings at one spot, or two without a rule or
+ * line, stay two findings. 128 bits, so a chosen ruleId cannot grind a colliding marker.
  */
 export function findingFingerprint(finding: Finding): string {
-  const key = [finding.tool.toLowerCase(), finding.ruleId ?? '', location(finding)].join('|');
-  return createHash('sha256').update(key).digest('hex').slice(0, 16);
-}
-
-const SECRET_PATTERNS: readonly RegExp[] = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
-  /\bAKIA[0-9A-Z]{16}\b/g,
-  /\b(?:gh[pousr]|github_pat)_[A-Za-z0-9_]{16,}\b/g,
-  /\bsk-[A-Za-z0-9_-]{16,}\b/g,
-  /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/g,
-  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b/g,
-  /\bAIza[0-9A-Za-z_-]{30,}\b/g,
-  /\bglpat-[A-Za-z0-9_-]{20,}\b/g,
-  /\bnpm_[A-Za-z0-9]{36}\b/g,
-];
-
-/** Keeps the field name (helpful when reviewing) and drops the value, quoted or not. */
-const CREDENTIAL =
-  /\b((?:[A-Za-z0-9]+[_-])*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)(?:[_-][A-Za-z0-9]+)*["']?\s*[:=]\s*)(["']?)([^\s"',;]{4,})\2/gi;
-/** `scheme://user:password@host` keeps the user and host. */
-const URL_PASSWORD = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:)[^\s/@]+@/gi;
-/** `Authorization: <scheme> <value>` loses everything after the colon. */
-const AUTH_HEADER = /\b(authorization["']?\s*[:=]\s*)["']?(?:(?:bearer|basic|token|digest)\s+)?[^\s"',;]+["']?/gi;
-const BEARER = /\b(bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi;
-const ANSI_SGR = /\u001b\[[0-9;]*m/g;
-
-/** Replaces credentials with `[redacted]` and keeps everything else, layout included. */
-export function maskSecrets(text: string): string {
-  let result = text;
-  for (const pattern of SECRET_PATTERNS) result = result.replace(pattern, '[redacted]');
-  return result
-    .replace(AUTH_HEADER, (_match, prefix: string) => `${prefix}[redacted]`)
-    .replace(BEARER, (_match, prefix: string) => `${prefix}[redacted]`)
-    .replace(URL_PASSWORD, (_match, prefix: string) => `${prefix}[redacted]@`)
-    .replace(CREDENTIAL, (_match, prefix: string) => `${prefix}[redacted]`);
-}
-
-export function redactSecrets(text: string, limit = 400): string {
-  const result = maskSecrets(text.replace(ANSI_SGR, '')).replace(/\s+/g, ' ').trim();
-  return result.length > limit ? `${result.slice(0, limit - 1)}…` : result;
-}
-
-export function shorten(text: string, limit: number): string {
-  const flat = redactSecrets(text, limit);
-  return flat;
+  const key = [
+    finding.tool.toLowerCase(),
+    finding.ruleId ?? '',
+    location(finding),
+    finding.startColumn ?? '',
+    finding.endLine ?? '',
+    createHash('sha256').update(messageKey(finding.message)).digest('hex').slice(0, 16),
+  ].join('|');
+  return createHash('sha256').update(key).digest('hex').slice(0, 32);
 }
 
 /** The one line a human reads in `cws inbox`, `cws status` and the log. */
@@ -156,7 +131,7 @@ export function findingTitle(finding: Finding): string {
   const rule = finding.ruleId === undefined || finding.ruleId === '' ? '' : ` ${finding.ruleId}`;
   const where = finding.external === true ? `outside the project: ${location(finding)}` : location(finding);
   const place = location(finding) === '' ? '' : ` (${where})`;
-  return `${finding.tool}${rule}: ${redactSecrets(finding.message, 160)}${place}`;
+  return `${redactSecrets(`${finding.tool}${rule}`, 120)}: ${redactSecrets(finding.message, 160)}${place}`;
 }
 
 export function findingLine(finding: Finding): string {

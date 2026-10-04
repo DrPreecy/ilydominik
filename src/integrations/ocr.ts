@@ -238,7 +238,7 @@ async function runJson(tool: string | ToolCommand, args: readonly string[], opts
   const result = await runTool(file, [...prefix, ...args], opts);
   if (!result.ok) {
     const why = result.timedOut ? 'timed out' : `exit ${result.code ?? 'unknown'}`;
-    const detail = firstLineOf(result.stderr);
+    const detail = redactSecrets(firstLineOf(result.stderr), 200);
     throw new Error(`${command} ${args.join(' ')} failed (${why})${detail === '' ? '' : `: ${detail}`}`);
   }
   try {

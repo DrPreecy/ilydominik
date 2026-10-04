@@ -20,7 +20,6 @@ import {
   findingTag,
   findingTitle,
   isAtLeast,
-  redactSecrets,
   severityToRisk,
   type Finding,
   type Severity,
@@ -28,6 +27,11 @@ import {
 
 export const DEFAULT_MIN_SEVERITY: Severity = 'medium';
 export const DEFAULT_LIMIT = 50;
+
+/** A usable `--limit`: a whole number of at least 1. Anything else records nothing rather than slicing from the end. */
+export function isValidLimit(limit: number): boolean {
+  return Number.isSafeInteger(limit) && limit >= 1;
+}
 
 export interface IngestOptions {
   minSeverity?: Severity;
@@ -58,8 +62,15 @@ export type RecordedSource = Pick<ProjectState, 'claims' | 'notes'>;
 
 export function planIngest(existing: RecordedSource, findings: readonly Finding[], opts: IngestOptions = {}): IngestPlan {
   const minimum = opts.minSeverity ?? DEFAULT_MIN_SEVERITY;
-  const limit = opts.limit ?? DEFAULT_LIMIT;
-  const known = new Set(recordedFindings(existing).map((entry) => entry.fingerprint));
+  const requested = opts.limit ?? DEFAULT_LIMIT;
+  const limit = isValidLimit(requested) ? requested : 0;
+  // a finding that was fixed (RETIRED) and shows up again is a regression: it is recorded anew.
+  // FALSIFIED and SUPPORTED ones stay known, so a false positive does not keep coming back.
+  const known = new Set(
+    recordedFindings(existing)
+      .filter((entry) => entry.claim.status !== 'RETIRED')
+      .map((entry) => entry.fingerprint),
+  );
 
   const duplicates: Finding[] = [];
   const eligible: Finding[] = [];
@@ -98,7 +109,8 @@ export function findingsNoteText(tool: string, total: number, source: string): s
 }
 
 export function findingClaimText(finding: Finding): string {
-  return `${findingTag(findingFingerprint(finding))} [${finding.severity}] ${redactSecrets(findingTitle(finding), 500)}`;
+  // findingTitle already redacts each part; redacting the joined title again would eat words after a rule id like `hardcoded-password:`
+  return `${findingTag(findingFingerprint(finding))} [${finding.severity}] ${findingTitle(finding).slice(0, 500)}`;
 }
 
 export function findingClaimInputs(findings: readonly Finding[], noteId: string, actor: Actor): EventInput[] {
@@ -125,6 +137,8 @@ const sameActor = (a: Actor, b: Actor): boolean =>
 
 /** A claim ingest wrote: marker first, a hypothesis (unless a human retyped it), from the run note of the same actor. */
 function ingestedBy(claim: Claim, notes: ReadonlyMap<string, Note>): boolean {
+  // ingest only ever writes AI hypotheses; a human-authored claim never counts, whatever its text says
+  if (claim.createdBy.kind !== 'ai') return false;
   if (claim.type !== 'HYPOTHESIS' && !claim.confirmed) return false;
   if (claim.derivedFrom.length !== 1) return false;
   const note = notes.get(claim.derivedFrom[0] ?? '');
