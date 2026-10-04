@@ -2,7 +2,7 @@ import { newId } from '../domain/ids.ts';
 import { DomainError, type Proposal, type Warning } from '../domain/types.ts';
 import type { EventLog } from '../store/event-log.ts';
 import { warningLine } from './format.ts';
-import { say, warn, type Env } from './human.ts';
+import { describeError, say, warn, type Env } from './human.ts';
 import { overrideInput, riskyPhaseWarnings } from './override.ts';
 
 const HUMAN = { kind: 'human' } as const;
@@ -45,13 +45,15 @@ export async function acceptWithRisk(log: EventLog, p: Proposal, warnings: Warni
   return resultId;
 }
 
-/** Run one step; a domain error is reported and swallowed so the caller's loop continues. */
-export async function guarded(env: Env, id: string, step: () => Promise<void>): Promise<void> {
+/** Run one step; a domain error is reported so the caller's loop continues. False means the step was skipped. */
+export async function guarded(env: Env, id: string, step: () => Promise<void>): Promise<boolean> {
   try {
     await step();
+    return true;
   } catch (error: unknown) {
     if (!(error instanceof DomainError)) throw error;
-    warn(env, `skipped ${id}: ${error.message}`);
+    warn(env, `skipped ${id}: ${describeError(error)}`);
+    return false;
   }
 }
 

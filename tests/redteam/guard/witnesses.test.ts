@@ -14,7 +14,7 @@ import { registerSafety } from '../../../src/cli/commands/safety.ts';
 import { CliExit } from '../../../src/cli/human.ts';
 import { EXIT, type CliIO } from '../../../src/cli/io.ts';
 import { findExecutable, runTool } from '../../../src/integrations/exec.ts';
-import { runEvidencePayload, uploadSpec } from '../../../src/cli/commands/sandbox.ts';
+import { runEvidencePayload, uploadSpec } from '../../../src/cli/commands/sandbox/index.ts';
 
 const isWin = process.platform === 'win32';
 let tmp = '';
@@ -268,7 +268,8 @@ describe('S witnesses: sandbox', () => {
   });
 
   it('S-22: sandbox run reports the sandboxed command exit code without colliding with cws exit codes', () => {
-    const src = fs.readFileSync(path.resolve('src/cli/commands/sandbox.ts'), 'utf8');
+    const dir = path.resolve('src/cli/commands/sandbox');
+    const src = fs.readdirSync(dir).map((f) => fs.readFileSync(path.join(dir, f), 'utf8')).join('');
     assert.doesNotMatch(src, /throw new CliExit\(result\.code \?\? EXIT\.ERROR\)/, 'remote exit code 2/3 become NEEDS_HUMAN/INTEGRITY');
   });
 });

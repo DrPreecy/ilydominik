@@ -4,6 +4,8 @@ import { resolveToolCommand, type ToolCommand } from '../../integrations/exec.ts
 import { coverageLines, missingRuleFiles, ocrPreview, ocrRules, ruleLines, type OcrPreview, type OcrRangeOptions } from '../../integrations/ocr.ts';
 import { fail, openLog, say, type ActorOpts, type Env } from '../human.ts';
 
+const AGENT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
 const MAX_LISTED_RULE_CHARS = 4000;
 
 /** Where the review result goes: agents record findings, they never accept them. */
@@ -47,10 +49,13 @@ function rangeOf(opts: { from?: string; to?: string; commit?: string; background
   };
 }
 
-async function reviewCode(env: Env, _opts: ActorOpts & { from?: string; to?: string; commit?: string; background?: string; exclude?: string; rules?: boolean }): Promise<void> {
+async function reviewCode(env: Env, opts: ActorOpts & { from?: string; to?: string; commit?: string; background?: string; exclude?: string; rules?: boolean }): Promise<void> {
+  if (opts.agent !== undefined && !AGENT_NAME.test(opts.agent)) {
+    fail(env, 'error: --agent must be a short name (letters, digits, . _ -)');
+  }
   await openLog(env);
   const command = resolveOcr(env);
-  const range = rangeOf(_opts);
+  const range = rangeOf(opts);
 
   let preview: OcrPreview;
   try {
@@ -65,7 +70,7 @@ async function reviewCode(env: Env, _opts: ActorOpts & { from?: string; to?: str
     return;
   }
 
-  if (_opts.rules !== false) {
+  if (opts.rules !== false) {
     const files = preview.reviewable.map((file) => file.path);
     try {
       const groups = await ocrRules(command, files, { cwd: env.io.cwd }, range);
@@ -79,7 +84,7 @@ async function reviewCode(env: Env, _opts: ActorOpts & { from?: string; to?: str
     }
   }
 
-  say(env, '', '## Review every file in the list above', '', HOW_TO_RECORD);
+  say(env, '', '## Review every file in the list above', '', HOW_TO_RECORD.replaceAll('<your-name>', opts.agent ?? '<your-name>'));
 }
 
 export function registerReviewCode(program: Command, env: Env): void {

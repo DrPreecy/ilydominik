@@ -1,4 +1,4 @@
-import type { Actor, ProjectState } from '../domain/types.ts';
+import { DomainError, type Actor, type ProjectState } from '../domain/types.ts';
 import { EventLog, findProjectRoot } from '../store/event-log.ts';
 import { sanitize } from './format.ts';
 import { EXIT, type CliIO } from './io.ts';
@@ -28,6 +28,17 @@ export function say(env: Env, ...lines: string[]): void {
   env.io.stdout(`${sanitize(lines.join('\n'), true)}\n`);
 }
 
+/** Schema version of every `--json` document; bump it when a field is removed or changes meaning. */
+export const JSON_SCHEMA_VERSION = 1;
+
+const BACKSLASH = '\u005c';
+
+/** One JSON document on stdout and nothing else; C1/DEL control characters are escaped for terminals. */
+export function sayJson(env: Env, value: Record<string, unknown>): void {
+  const text = JSON.stringify({ schemaVersion: JSON_SCHEMA_VERSION, ...value }, null, 2);
+  env.io.stdout(`${text.replace(/[\u007f-\u009f]/g, (c) => `${BACKSLASH}u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)}\n`);
+}
+
 export function warn(env: Env, ...lines: string[]): void {
   env.io.stderr(`${sanitize(lines.join('\n'), true)}\n`);
 }
@@ -35,6 +46,11 @@ export function warn(env: Env, ...lines: string[]): void {
 export function fail(env: Env, message: string, code: number = EXIT.ERROR): never {
   warn(env, message);
   throw new CliExit(code);
+}
+
+/** A role describes an AI agent; without --agent it would silently vanish into a human record. */
+export function requireAgentForRole(env: Env, opts: ActorOpts): void {
+  if (opts.role !== undefined && !opts.agent) fail(env, 'error: --role only applies together with --agent <name>');
 }
 
 export function actorOf(opts: ActorOpts): Actor {
@@ -74,6 +90,31 @@ export async function confirmDecision(env: Env): Promise<void> {
   const answer = await env.io.ask(`Type ${code} to confirm (you are acting as the human decision-maker): `);
   if (answer.trim().toUpperCase() === code.toUpperCase()) return;
   fail(env, 'Not confirmed.', EXIT.NEEDS_HUMAN);
+}
+
+/** One plain line for a person: no error codes, no stack, no library jargon. */
+export function describeError(error: unknown): string {
+  if (error instanceof DomainError) return error.message.replace(/^\[[A-Z_]+\]\s*/, '');
+  if (typeof error === 'object' && error !== null) {
+    const e = error as { code?: unknown; path?: unknown; issues?: unknown; message?: unknown };
+    if (Array.isArray(e.issues)) {
+      const issues = (e.issues as { path?: unknown; message?: unknown }[]).map((issue) => {
+        const where = Array.isArray(issue.path) && issue.path.length > 0 ? `${issue.path.join('.')}: ` : '';
+        return `${where}${String(issue.message)}`;
+      });
+      return `invalid input (${issues.join('; ')})`;
+    }
+    const target = typeof e.path === 'string' ? ` (${e.path})` : '';
+    switch (e.code) {
+      case 'ENOENT': return `file or folder not found${target}`;
+      case 'EACCES':
+      case 'EPERM': return `no permission to use it${target}`;
+      case 'EISDIR': return `expected a file but found a folder${target}`;
+      case 'ENOTDIR': return `expected a folder but found a file${target}`;
+      default: break;
+    }
+  }
+  return error instanceof Error ? error.message : String(error);
 }
 
 export function requireClaim(env: Env, state: ProjectState, claimId: string): void {

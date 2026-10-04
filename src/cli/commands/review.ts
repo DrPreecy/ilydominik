@@ -36,9 +36,23 @@ async function acceptInReview(env: Env, log: EventLog, p: Proposal, tally: Tally
   tally.accepted++;
 }
 
+/** Skip is `k` (or Enter); `s` is reserved for "supported" on claims and never means skip. */
+const PROPOSAL_KEYS = new Set(['a', 'r', 'k', 'q', '']);
+const CLAIM_KEYS = new Set(['c', 'r', 'k', 'q', '']);
+const TESTABLE_CLAIM_KEYS = new Set([...CLAIM_KEYS, 'f', 's']);
+
+/** One key from `allowed`; anything else is said out loud and asked again, never read as another key. */
+async function askKey(env: Env, question: string, allowed: ReadonlySet<string>): Promise<string> {
+  for (;;) {
+    const key = (await env.io.ask(question)).trim().toLowerCase();
+    if (allowed.has(key)) return key;
+    warn(env, `"${key}" is not one of the choices here.`);
+  }
+}
+
 async function reviewProposal(env: Env, log: EventLog, p: Proposal, tally: Tally): Promise<Verdict> {
   say(env, '', describeProposal(p, log.state));
-  const key = (await env.io.ask('[a]ccept [r]eject [s]kip [q]uit: ')).trim().toLowerCase();
+  const key = await askKey(env, '[a]ccept [r]eject [k] skip [q]uit: ', PROPOSAL_KEYS);
   if (key === 'q') return 'quit';
   if (key === 'a') {
     await guarded(env, p.id, () => acceptInReview(env, log, p, tally));
@@ -90,9 +104,9 @@ async function claimAction(env: Env, log: EventLog, c: Claim, key: string, tally
 async function reviewClaim(env: Env, log: EventLog, c: Claim, tally: Tally): Promise<Verdict> {
   say(env, '', describeClaim(c, log.state));
   const keys = TESTABLE.has(c.type)
-    ? '[c]onfirm [f]alsified [s]upported [r]etire [Enter] skip [q]uit: '
-    : '[c]onfirm [r]etire [s]kip [q]uit: ';
-  const key = (await env.io.ask(keys)).trim().toLowerCase();
+    ? '[c]onfirm [f]alsified [s]upported [r]etire [k] skip [q]uit: '
+    : '[c]onfirm [r]etire [k] skip [q]uit: ';
+  const key = await askKey(env, keys, TESTABLE.has(c.type) ? TESTABLE_CLAIM_KEYS : CLAIM_KEYS);
   if (key === 'q') return 'quit';
   await guarded(env, c.id, () => claimAction(env, log, c, key, tally));
   return 'continue';

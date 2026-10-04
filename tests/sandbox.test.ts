@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { runCli } from '../src/cli/app.ts';
 import { EXIT, type CliIO } from '../src/cli/io.ts';
-import { accessDecisionPayload, hostPathFor, reportLines, ruleDecisionPayload, runEvidencePayload, uploadSpec } from '../src/cli/commands/sandbox.ts';
+import { accessDecisionPayload, hostPathFor, reportLines, ruleDecisionPayload, runEvidencePayload, uploadSpec } from '../src/cli/commands/sandbox/index.ts';
 import { EventLog } from '../src/store/event-log.ts';
 import type { RunResult } from '../src/integrations/exec.ts';
 import {

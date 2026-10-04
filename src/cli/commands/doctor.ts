@@ -4,7 +4,7 @@ import { findExecutable, isBatchShim, runTool, toolVersion, type RunResult } fro
 import { hasGeminiKey, readAiUsage, todayIsoDate } from '../../integrations/gemini.ts';
 import { loadCredentials } from '../../cloud/auth.ts';
 import { EXIT } from '../io.ts';
-import { projectRoot, say, type Env } from '../human.ts';
+import { CliExit, projectRoot, say, type Env } from '../human.ts';
 
 export type HostKind = 'codespace' | 'wsl' | 'windows' | 'linux' | 'macos' | 'unknown';
 
@@ -245,7 +245,7 @@ export async function doctor(env: Env, opts: { deep?: boolean } = {}): Promise<n
     lines.push('', 'Next: `cws sandbox policy --rule <host:port>` to allow one destination, then `cws sandbox up`.');
   }
   say(env, ...lines);
-  return EXIT.OK;
+  return missingRequired.length > 0 ? EXIT.ERROR : EXIT.OK;
 }
 
 export function registerDoctor(program: Command, env: Env): void {
@@ -254,6 +254,7 @@ export function registerDoctor(program: Command, env: Env): void {
     .description('check this workspace: host, project memory, and the tools agents use')
     .option('--deep', 'also check that container services answer (slower)')
     .action(async (o: { deep?: boolean }) => {
-      await doctor(env, o);
+      const code = await doctor(env, o);
+      if (code !== EXIT.OK) throw new CliExit(code);
     });
 }

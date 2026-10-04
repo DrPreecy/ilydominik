@@ -130,6 +130,9 @@ async function end(env: Env, opts: { summary?: string }): Promise<void> {
   const sessionId = log.state.activeSessionId ?? (latest?.endedAt ? latest.id : undefined);
   if (!sessionId) fail(env, 'error: no active session — start one with `cws session start <goal>`');
   await handoffPath(log, sessionId);
+  if (!log.state.activeSessionId && opts.summary !== undefined) {
+    fail(env, `error: session ${sessionId} has already ended, so the summary was not recorded. Start a new session to record new work.`);
+  }
   if (log.state.activeSessionId) {
     const payload = opts.summary ? { sessionId, summary: opts.summary } : { sessionId };
     await log.append({ type: 'SESSION_ENDED', actor: HUMAN, payload });
