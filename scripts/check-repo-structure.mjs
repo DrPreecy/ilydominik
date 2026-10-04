@@ -75,7 +75,7 @@ function checkImports(rel, text) {
   const importPattern = /(?:import\s+(?:type\s+)?(?:[^'"]+\s+from\s+)?|export\s+[^'"]+\s+from\s+|import\s*\()\s*['"]([^'"]+)['"]/g;
   for (const match of text.matchAll(importPattern)) {
     const specifier = match[1];
-    if (specifier.startsWith('.') || specifier.startsWith('/') || builtins.has(specifier)) continue;
+    if (specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('node:') || builtins.has(specifier)) continue;
     const pkg = specifier.startsWith('@') ? specifier.split('/').slice(0, 2).join('/') : specifier.split('/')[0];
     if (!declared.has(pkg)) failures.push(`${rel} imports undeclared package: ${pkg}`);
   }
