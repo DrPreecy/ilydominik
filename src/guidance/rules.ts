@@ -1,4 +1,5 @@
 import type { Phase, ProjectState, Purpose, Warning } from '../domain/types.ts';
+import { unprocessedNotes as getUnprocessedNotes } from './unprocessed-notes.ts';
 
 export interface RuleHit {
   title: string;
@@ -43,7 +44,8 @@ const PHASE_DEFAULTS: Record<Phase, { purpose: Purpose; title: string; reason: s
   POST_LAUNCH: { purpose: 'learn', title: 'Learn from what happened', reason: 'Look at the results and decide what to keep, change or drop.' },
 };
 
-const isEmpty = (state: ProjectState) => state.notes.length === 0 && state.claims.length === 0 && state.proposals.length === 0;
+const isEmpty = (state: ProjectState) =>
+  state.notes.length === 0 && state.claims.length === 0 && state.decisions.length === 0 && state.proposals.length === 0;
 
 const emptyProject: Rule = {
   id: 'empty-project',
@@ -74,8 +76,7 @@ const unprocessedNotes: Rule = {
   purpose: 'understand',
   priority: 60,
   evaluate: (state) => {
-    const used = new Set(state.claims.flatMap((c) => c.derivedFrom));
-    const refs = state.notes.filter((n) => !used.has(n.id)).map((n) => n.id);
+    const refs = getUnprocessedNotes(state).map((note) => note.id);
     if (refs.length === 0) return null;
     if (state.phase === 'EXPLORATION') {
       return { title: 'When you feel done dumping: make sense of your notes', reason: `${refs.length} ${refs.length === 1 ? 'note is' : 'notes are'} waiting. No rush, getting everything out comes first.`, refs, priority: EXPLORATION_NOTES_PRIORITY };

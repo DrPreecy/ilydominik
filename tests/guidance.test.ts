@@ -180,6 +180,25 @@ describe('next steps (§23: guidance, not instruction)', () => {
     assert.deepEqual(u.refs, ['n1']);
   });
 
+  it('a decision linked to a note counts as processing it', () => {
+    let s = step(project(), { type: 'NOTE_ADDED', actor: HUMAN, payload: { noteId: 'n1', text: 'idea' } });
+    s = step(s, {
+      type: 'DECISION_RECORDED',
+      actor: HUMAN,
+      payload: { decisionId: 'd1', title: 'Choose', options: ['a'], selected: 'a', rationale: 'r', links: ['n1'] },
+    });
+    assert.equal(nextSteps(s).find((item) => item.ruleId === 'unprocessed-notes'), undefined);
+  });
+
+  it('a decision makes an otherwise empty project non-empty', () => {
+    const s = step(project(), {
+      type: 'DECISION_RECORDED',
+      actor: HUMAN,
+      payload: { decisionId: 'd1', title: 'Choose', options: ['a'], selected: 'a', rationale: 'r' },
+    });
+    assert.equal(nextSteps(s).find((item) => item.ruleId === 'empty-project'), undefined);
+  });
+
   it('during EXPLORATION, dumping more stays the top suggestion; structuring notes ranks below it (§12)', () => {
     let s = step(project(), { type: 'NOTE_ADDED', actor: HUMAN, payload: { noteId: 'n1', text: 'idea' } });
     assert.equal(nextSteps(s)[0]!.purpose, 'explore');
@@ -269,6 +288,16 @@ describe('context pack (no manual context assembly)', () => {
     const notes = section(buildContext(rich(), 'understand'), '## Unprocessed notes');
     assert.ok(notes.includes('SECOND NOTE'));
     assert.ok(!notes.includes('RAW NOTE TEXT'));
+  });
+
+  it('omits notes linked from decisions from the unprocessed notes section', () => {
+    let s = step(project(), { type: 'NOTE_ADDED', actor: HUMAN, payload: { noteId: 'n1', text: 'decided note' } });
+    s = step(s, {
+      type: 'DECISION_RECORDED',
+      actor: HUMAN,
+      payload: { decisionId: 'd1', title: 'Choose', options: ['a'], selected: 'a', rationale: 'r', links: ['n1'] },
+    });
+    assert.equal(section(buildContext(s, 'understand'), '## Unprocessed notes'), '');
   });
 
   it('ends with write-back instructions that force the AI to identify itself', () => {

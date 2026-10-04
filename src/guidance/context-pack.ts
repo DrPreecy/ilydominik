@@ -1,6 +1,7 @@
 import type { Claim, ProjectState, Purpose } from '../domain/types.ts';
 import { maskSecrets } from '../findings/types.ts';
 import { assess, awaitsReview } from './warnings.ts';
+import { unprocessedNotes } from './unprocessed-notes.ts';
 
 const DEFAULT_MAX_NOTES = 20;
 
@@ -53,8 +54,7 @@ const HOW_TO_RECORD = [
 
 export function buildContext(state: ProjectState, purpose: Purpose, opts: ContextOptions = {}): string {
   const activeSession = state.sessions.find((session) => session.id === state.activeSessionId);
-  const usedNotes = new Set(state.claims.flatMap((claim) => claim.derivedFrom));
-  const notes = state.notes.filter((note) => !usedNotes.has(note.id)).slice(-(opts.maxNotes ?? DEFAULT_MAX_NOTES));
+  const notes = unprocessedNotes(state).slice(-(opts.maxNotes ?? DEFAULT_MAX_NOTES));
   const claims = state.claims.filter((claim) => claim.status !== 'RETIRED');
   const decisions = state.decisions.map((decision) => ({
     ...decision,
