@@ -19,7 +19,7 @@ test('root verification commands target root implementation directly', () => {
   assert.equal(scripts.coverage, 'c8 --reporter=text --check-coverage --lines 80 --functions 80 --branches 75 npm test');
   assert.equal(
     scripts['verify:repo'],
-    'node scripts/check-repo-structure.mjs && corepack pnpm@10.34.6 install --frozen-lockfile --lockfile-only',
+    'node scripts/check-repo-structure.mjs && node scripts/check-repo-hygiene.mjs && corepack pnpm@10.34.6 install --frozen-lockfile --lockfile-only',
   );
   assert.match(scripts.verify, /npm run verify:repo/);
 });
