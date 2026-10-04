@@ -361,6 +361,44 @@ function maskKeyValues(text: string): string {
   return parts.join('');
 }
 
+const ENTROPY_TOKEN = /(?<![A-Za-z0-9])([A-Za-z0-9][A-Za-z0-9_+=~-]{15,})(?![A-Za-z0-9])/g;
+const PUBLIC_KEY_MARKER = /-----BEGIN (?:RSA |EC )?PUBLIC KEY-----|-----END (?:RSA |EC )?PUBLIC KEY-----/g;
+
+function entropy(value: string): number {
+  const counts = new Map<string, number>();
+  for (const char of value) counts.set(char, (counts.get(char) ?? 0) + 1);
+  let result = 0;
+  for (const count of counts.values()) {
+    const probability = count / value.length;
+    result -= probability * Math.log2(probability);
+  }
+  return result;
+}
+
+function maskEntropyTokens(text: string): string {
+  const parts: string[] = [];
+  let cursor = 0;
+  ENTROPY_TOKEN.lastIndex = 0;
+  PUBLIC_KEY_MARKER.lastIndex = 0;
+  let inPublicKey = false;
+  let marker = PUBLIC_KEY_MARKER.exec(text);
+  for (const match of text.matchAll(ENTROPY_TOKEN)) {
+    while (marker !== null && marker.index < match.index) {
+      inPublicKey = marker[0].startsWith('-----BEGIN');
+      marker = PUBLIC_KEY_MARKER.exec(text);
+    }
+    if (inPublicKey) continue;
+    const token = match[1] ?? '';
+    if (!/\d/.test(token) || entropy(token) < 2.8) continue;
+    const start = match.index;
+    parts.push(text.slice(cursor, start), REDACTED);
+    cursor = start + match[0].length;
+  }
+  if (cursor === 0) return text;
+  parts.push(text.slice(cursor));
+  return parts.join('');
+}
+
 // ---------------------------------------------------------------------------------------------
 // URLs, headers, command lines
 // ---------------------------------------------------------------------------------------------
@@ -379,7 +417,7 @@ export function maskSecrets(text: string): string {
     .replace(BEARER, (_match, prefix: string) => `${prefix}${REDACTED}`)
     .replace(URL_PASSWORD, (_match, prefix: string) => `${prefix}${REDACTED}@`)
     .replace(CURL_USER, (_match, prefix: string) => `${prefix}${REDACTED}`);
-  return maskKeyValues(flat);
+  return maskEntropyTokens(maskKeyValues(flat));
 }
 
 const ANSI_SGR = /\u001b\[[0-9;]*m/g;
