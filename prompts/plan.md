@@ -90,12 +90,10 @@ Propose an ordering: what should happen first (depends on nothing) vs. later (ca
 
 Identify yourself with `--agent <your-name>`. Record your own analysis as an INTERPRETATION, not as the user\'s words. There are no specialized task, concept, completion, review or rollout claim types.
 
-- `cws claim add --agent <your-name> --type INTERPRETATION --text "Proposed workstreams, tasks, dependencies and order" --from <existing-note-claim-or-decision-ids>`
-- `cws claim add --agent <your-name> --type ASSUMPTION --text "<untested premise>" --risk HIGH --from <existing-note-claim-or-decision-ids>`
-- `cws claim add --agent <your-name> --type UNKNOWN --text "<open question>" --from <existing-note-claim-or-decision-ids>`
-- `cws evidence add --agent <your-name> --claim <existing-claim-id> --text "<finding and method>" --source "<source or reference>"`
-- Only for the person\'s exact words: `cws dump --agent <your-name> "<exact words>"`. Never use this for your analysis or observations.
-- `cws propose --agent <your-name> --json -` reads a JSON array from stdin. Propose FACT or USER_STATEMENT claims, decisions, status changes and phase moves; never perform human decision commands yourself.
+- Send text-bearing agent proposals through stdin with `cws propose --agent <your-name> --json -` and a quoted heredoc using a fresh, unpredictable delimiter that does not occur in the JSON. The human reviews proposals with `cws review`.
+- Save the person\'s exact words only with `cws dump --agent <your-name> -`, sending the words through stdin with a quoted heredoc. Never put their words in a shell argument.
+- `cws claim add --text` and `cws evidence add --text` do not accept stdin. Do not pass dynamic text to them through a shell; ask the human to enter evidence through the CLI.
+- Propose FACT or USER_STATEMENT claims, decisions, status changes and phase moves; never perform human decision commands yourself.
 
 Example proposal data (replace placeholder IDs with existing IDs):
 

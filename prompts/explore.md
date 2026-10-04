@@ -57,6 +57,12 @@ End your turn with ONE low-pressure open question to keep the conversation going
 
 ## Recording
 
-Save the person's own words verbatim as notes using `cws dump --agent <your-name> "<exact words>"`. Do not paraphrase. When they say something important in their own voice, record it exactly as they said it.
+Save the person's own words verbatim as notes using `cws dump --agent <your-name> -` and stdin. Do not paraphrase or place their words in a shell argument. Use a quoted heredoc with a fresh, unpredictable delimiter that does not occur in the text:
+
+```sh
+cws dump --agent <your-name> - <<'CWS_NOTE_<random>'
+<exact words>
+CWS_NOTE_<random>
+```
 
 When there is enough material, suggest moving to the next phase (understanding) only when they seem genuinely done with this one.

@@ -274,8 +274,10 @@ describe('context pack (no manual context assembly)', () => {
   it('ends with write-back instructions that force the AI to identify itself', () => {
     const md = buildContext(rich(), 'understand');
     const how = section(md, '## How to record your results');
-    assert.ok(how.includes('cws claim add --agent'));
     assert.ok(how.includes('cws propose --agent'));
+    assert.ok(how.includes('cws dump --agent <your-name> -'));
+    assert.match(how, /stdin/);
+    assert.match(how, /do not accept stdin/);
     assert.match(how, /never/i);
   });
 
@@ -291,13 +293,11 @@ describe('prompt templates', () => {
       const { body } = await loadPromptTemplate(purpose);
       assert.doesNotMatch(body, /cws (?:add|note)\b/, purpose);
       assert.doesNotMatch(body, /--(?:supports|contradicts|confidence|tests-assumption|workstream|effort|depends-on|blocks|rests-on|status)\b/, purpose);
-      for (const command of body.matchAll(/`(cws (?:dump|claim add|evidence add|propose)[^`]+)`/g)) {
-        assert.match(command[1]!, /--agent <your-name>/, purpose);
-        if (command[1]!.startsWith('cws claim add')) assert.match(command[1]!, /--type (?:INTERPRETATION|ASSUMPTION|HYPOTHESIS|UNKNOWN)\b.*--text /, purpose);
-        if (command[1]!.startsWith('cws evidence add')) {
-          assert.match(command[1]!, /--claim .*--text /, purpose);
-          assert.doesNotMatch(command[1]!, /--type /, purpose);
-        }
+      assert.match(body, /cws dump --agent <your-name> -/, purpose);
+      if (purpose !== 'explore') {
+        assert.match(body, /cws propose --agent <your-name> --json -/, purpose);
+        assert.match(body, /do not pass dynamic text to them through a shell/i, purpose);
+        assert.doesNotMatch(body, /cws (?:claim add|evidence add)[^\n`]*--text\s+"/, purpose);
       }
     }
   });

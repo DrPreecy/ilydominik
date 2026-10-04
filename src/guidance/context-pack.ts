@@ -42,12 +42,11 @@ function claimSections(claims: Claim[]): string[] {
 
 const HOW_TO_RECORD = [
   '## How to record your results',
-  'Use these commands (replace <your-name> with your agent name):',
-  '- `cws dump --agent <your-name> "<the user\'s exact words>"` — save the user\'s raw words verbatim.',
-  '- `cws claim add --agent <your-name> --type INTERPRETATION|ASSUMPTION|HYPOTHESIS|UNKNOWN --text "..." [--risk LOW|MEDIUM|HIGH|FATAL] [--from <ids>]` — record your own interpretation, assumption, hypothesis or open question.',
-  '- `cws evidence add --agent <your-name> --claim <id> --text "..." [--source <url or reference>]` — attach evidence to an existing claim.',
-  '- `cws propose --agent <your-name> --json -` — suggest anything else, reading a JSON array from stdin, e.g. `[{"item":{"kind":"claim","type":"USER_STATEMENT","text":"..."},"rationale":"..."}]`.',
-  '  Item kinds: `claim` (any type, including FACT and USER_STATEMENT), `status` {claimId,status,evidence?,answer?}, `decision` {title,options,selected,rationale,links?}, `phase` {to,reason}.',
+  'Replace <your-name> with your agent name. Send all dynamic text through stdin, never in a shell argument.',
+  '- Save the user\'s exact words with `cws dump --agent <your-name> -` and a quoted heredoc using a fresh, unpredictable delimiter that does not occur in the text.',
+  '- Send claims, decisions, status changes and phase moves with `cws propose --agent <your-name> --json -` and a quoted heredoc; the human reviews proposals with `cws review`.',
+  '- `cws claim add --text` and `cws evidence add --text` do not accept stdin. Do not pass dynamic text to them through a shell; ask the human to enter evidence through the CLI.',
+  '  Proposal item kinds: `claim` (any type, including FACT and USER_STATEMENT), `status` {claimId,status,evidence?,answer?}, `decision` {title,options,selected,rationale,links?}, `phase` {to,reason}.',
   '',
   'You never record facts, user statements, decisions, status or phase changes directly — propose them; the human accepts or rejects them with `cws review`.',
 ];
