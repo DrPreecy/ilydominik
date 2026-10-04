@@ -125,6 +125,8 @@ async function reject(env: Env, id: string, opts: { note?: string }): Promise<vo
   const log = await openLog(env);
   const p = pendingProposals(log.state).find((x) => x.id === id);
   if (!p) fail(env, `error: no pending proposal ${id}`);
+  say(env, describeProposal(p, log.state));
+  await confirmDecision(env);
   await rejectOne(log, p, opts.note);
   say(env, `rejected [${id}]`);
 }
