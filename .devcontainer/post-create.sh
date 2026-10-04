@@ -6,11 +6,18 @@ set -euo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo"
 
+PNPM_VERSION=10.34.6
+CLAUDE_CODE_VERSION=2.1.289
+CODEX_VERSION=0.160.0
+GEMINI_CLI_VERSION=0.62.0
+COPILOT_VERSION=1.0.91
+UV_VERSION=0.12.23
+
 step() { printf '\n==> %s\n' "$1"; }
 optional() { "$@" || printf 'warning: optional step failed: %s\n' "$*" >&2; }
 
 step "Installing pnpm and project dependencies"
-npm install --global pnpm@10
+npm install --global "pnpm@$PNPM_VERSION"
 pnpm install --frozen-lockfile
 
 step "Building cws"
@@ -26,14 +33,14 @@ chmod +x "$bin_dir/cws"
 
 if [ "${CWS_SKIP_AGENT_CLIS:-0}" != "1" ]; then
   step "Installing agent command-line tools (optional)"
-  optional npm install --global @anthropic-ai/claude-code
-  optional npm install --global @openai/codex
-  optional npm install --global @google/gemini-cli
-  optional npm install --global @github/copilot
+  optional npm install --global "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
+  optional npm install --global "@openai/codex@$CODEX_VERSION"
+  optional npm install --global "@google/gemini-cli@$GEMINI_CLI_VERSION"
+  optional npm install --global "@github/copilot@$COPILOT_VERSION"
 fi
 
 step "Installing uv for Python-based agent skills (optional)"
-optional python3 -m pip install --user --quiet uv
+optional python3 -m pip install --user --quiet "uv==$UV_VERSION"
 
 cat <<'MSG'
 
