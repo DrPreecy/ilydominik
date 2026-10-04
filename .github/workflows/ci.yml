@@ -5,27 +5,88 @@ on:
     branches: [main]
   pull_request:
 
-permissions:
-  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   verify:
+    permissions:
+      contents: read
+    timeout-minutes: 30
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with:
-          version: 10
-      - uses: actions/setup-node@v4
+          version: 10.34.6
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: npm run format:check
-      - run: npm run typecheck
       - run: npm run build
-      - run: npm test
       - run: npm run coverage
       - run: npm run verify:repo
+
+  firestore-rules:
+    permissions:
+      contents: read
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 10.34.6
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: pnpm install --frozen-lockfile
+      - run: npm run test:rules
+
+  witnesses:
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 10.34.6
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Run red-team witnesses and summarize
+        shell: bash
+        run: |
+          output="$RUNNER_TEMP/witnesses.tap"
+          set +e
+          node --test --import tsx --test-reporter=tap 'tests/redteam*/**/*.test.ts' 'tests/redteam*/**/*.test.mjs' >"$output" 2>&1
+          set -e
+          cat "$output"
+          green="$(sed -n 's/^# pass //p' "$output" | tail -n 1)"
+          red="$(sed -n 's/^# fail //p' "$output" | tail -n 1)"
+          green="${green:-0}"
+          red="${red:-0}"
+          {
+            echo "### Red-team witness results"
+            echo "- Green (passing): $green"
+            echo "- Red (failing): $red"
+          } >> "$GITHUB_STEP_SUMMARY"

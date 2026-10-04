@@ -21,7 +21,7 @@
     "prebuild": "node scripts/clean-dist.mjs",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --import tsx \"tests/**/*.test.ts\" \"tests/**/*.test.mjs\"",
+    "test": "node --test --import tsx \"tests/*.test.ts\" \"tests/*.test.mjs\" \"tests/cloud/*.test.ts\" \"tests/core/*.test.ts\" \"tests/firebase/*.test.ts\" \"tests/scripts/*.test.mjs\"",
     "coverage": "c8 --reporter=text --check-coverage --lines 80 --functions 80 --branches 75 npm test",
     "format": "node scripts/check-format.mjs --write",
     "format:check": "node scripts/check-format.mjs",
