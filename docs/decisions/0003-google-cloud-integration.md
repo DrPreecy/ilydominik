@@ -1,6 +1,6 @@
 # ADR 0003 - Google Cloud integration (Gemini, Firebase sync, and dashboard prep)
 
-- Status: accepted (2026-10-03)
+- Status: accepted (2026-10-03); Firebase sync and the read-only dashboard are in progress.
 - Context: CWS needs AI capabilities (Gemini), multi-device synchronization of project memory, and a web dashboard to visualize project state. The integration must follow a strict €0-first budget philosophy, starting on the Firebase Spark free tier and Gemini API free tier via Google AI Studio keys, with an optional future Stage 2 utilizing Google AI Pro developer credits and tight budget alerts.
 - Decision:
   - **Local event log remains canonical**: The local `.cws/events.jsonl` log is the single source of truth. Cloud storage (Firestore) serves strictly as a synchronized copy/replica for multi-device sync and web visualization.

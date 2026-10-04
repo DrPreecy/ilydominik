@@ -46,8 +46,8 @@ Nine phases. Any phase can move to any other. A backward move lists the items cr
 `cws install-agents` writes one protocol (`AGENTS.md`) and thin per-tool wrappers:
 
 - Copilot: `.github/prompts/cws-*.prompt.md`
-- Claude Code: `.claude/commands/cws-*.md`
-- Gemini/Antigravity: `.agent/workflows/cws-*.md`
+- Claude Code: `CLAUDE.md` and `.claude/commands/cws-*.md`
+- Gemini/Antigravity: `GEMINI.md` and `.agent/workflows/cws-*.md`
 
 Every wrapper says the same thing: run `cws context <purpose>` and record results only through the listed `--agent` commands.
 
