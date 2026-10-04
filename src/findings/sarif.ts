@@ -12,6 +12,7 @@ import { locatePath, redactSecrets, type Finding, type Severity } from './types.
 const regionSchema = z
   .object({
     startLine: z.number().int().optional(),
+    startColumn: z.number().int().optional(),
     endLine: z.number().int().optional(),
     snippet: z.object({ text: z.string().optional() }).optional(),
   })
@@ -159,9 +160,27 @@ function ruleOf(result: SarifResult, rules: readonly SarifRule[]): { rule: Sarif
   return { rule, ruleId };
 }
 
+const MAX_LINE = 10_000_000;
+
+const validNumber = (value: number | undefined): number | undefined =>
+  value !== undefined && Number.isInteger(value) && value >= 1 && value <= MAX_LINE ? value : undefined;
+
+/** Same rules as the cws format: positive, sane, and the end not before the start. */
+function validLines(region: z.infer<typeof regionSchema> | undefined): { startLine?: number; startColumn?: number; endLine?: number } {
+  const startLine = validNumber(region?.startLine);
+  const endLine = validNumber(region?.endLine);
+  const startColumn = startLine === undefined ? undefined : validNumber(region?.startColumn);
+  return {
+    ...(startLine === undefined ? {} : { startLine }),
+    ...(startColumn === undefined ? {} : { startColumn }),
+    ...(endLine === undefined || startLine === undefined || endLine < startLine ? {} : { endLine }),
+  };
+}
+
 export function parseSarif(raw: unknown, opts: ParseSarifOptions = {}): Finding[] {
   const doc = parseSarifDocument(raw);
   const findings: Finding[] = [];
+  if (opts.limit !== undefined && !(opts.limit >= 1)) return findings;
 
   for (const run of doc.runs) {
     const driver = run.tool?.driver;
@@ -172,12 +191,13 @@ export function parseSarif(raw: unknown, opts: ParseSarifOptions = {}): Finding[
       const { rule, ruleId } = ruleOf(result, rules);
       const physical = result.locations?.[0]?.physicalLocation;
       const uri = physical?.artifactLocation?.uri;
-      if (uri === undefined || uri === '') continue;
       const tags = rule?.properties?.tags ?? [];
       const security = rule?.properties?.['security-severity'];
       const message = result.message?.text ?? result.message?.markdown ?? rule?.shortDescription?.text ?? 'finding';
       const snippet = physical?.region?.snippet?.text;
-      const place = locatePath(uriToPath(uri), opts.root);
+      // a result without a location is still a finding: it is recorded with no path rather than dropped
+      const place = uri === undefined || uri === '' ? { path: '', external: false } : locatePath(uriToPath(uri), opts.root);
+      const lines = validLines(physical?.region);
       findings.push({
         tool,
         ...(ruleId === undefined ? {} : { ruleId }),
@@ -186,12 +206,13 @@ export function parseSarif(raw: unknown, opts: ParseSarifOptions = {}): Finding[
         ...(tags.length === 0 ? {} : { category: tags[0] ?? '' }),
         path: place.path,
         ...(place.external ? { external: true } : {}),
-        ...(physical?.region?.startLine === undefined ? {} : { startLine: physical.region.startLine }),
-        ...(physical?.region?.endLine === undefined ? {} : { endLine: physical.region.endLine }),
+        ...(lines.startLine === undefined ? {} : { startLine: lines.startLine }),
+        ...(lines.startColumn === undefined ? {} : { startColumn: lines.startColumn }),
+        ...(lines.endLine === undefined ? {} : { endLine: lines.endLine }),
         ...(snippet === undefined || snippet === '' ? {} : { snippet: redactSecrets(snippet, 400) }),
         ...(rule?.helpUri === undefined ? {} : { helpUri: rule.helpUri }),
       });
-      if (opts.limit !== undefined && findings.length >= opts.limit) return findings;
+      if (opts.limit !== undefined && findings.length >= Math.max(0, opts.limit)) return findings;
     }
   }
 

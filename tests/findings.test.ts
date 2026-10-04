@@ -94,11 +94,12 @@ describe('finding shape', () => {
     assert.equal(normalizePath('.\\src\\a.ts'), 'src/a.ts');
     assert.equal(normalizePath('/src/a.ts'), 'src/a.ts');
     const one = findingFingerprint(finding());
-    assert.equal(one, findingFingerprint(finding({ message: 'reworded message' })));
+    assert.equal(one, findingFingerprint(finding({ message: 'Unvalidated   INPUT reaches the QUERY' })));
+    assert.notEqual(one, findingFingerprint(finding({ message: 'reworded message' })));
     assert.notEqual(one, findingFingerprint(finding({ startLine: 43 })));
     assert.notEqual(one, findingFingerprint(finding({ path: 'src/other.ts' })));
     assert.notEqual(one, findingFingerprint(finding({ tool: 'codeql' })));
-    assert.equal(one.length, 16);
+    assert.equal(one.length, 32);
   });
 
   it('round-trips the marker in claim text', () => {
@@ -174,7 +175,7 @@ describe('sarif', () => {
     assert.equal(parsed?.helpUri, 'https://example.test/rule');
   });
 
-  it('falls back to the result level and skips results without a location', () => {
+  it('falls back to the result level and keeps results without a location', () => {
     const doc = {
       runs: [
         {
@@ -187,10 +188,12 @@ describe('sarif', () => {
       ],
     };
     const findings = parseSarif(doc);
-    assert.equal(findings.length, 1);
+    assert.equal(findings.length, 2);
     assert.equal(findings[0]?.tool, 'semgrep');
     assert.equal(findings[0]?.severity, 'high');
     assert.equal(findings[0]?.startLine, undefined);
+    assert.equal(findings[1]?.path, '');
+    assert.equal(findings[1]?.severity, 'low');
   });
 
   it('maps severities and tool names', () => {
@@ -335,7 +338,7 @@ describe('finding ingest planning', () => {
     assert.equal(payload?.type, 'HYPOTHESIS');
     assert.equal(payload?.risk, 'FATAL');
     assert.deepEqual(payload?.derivedFrom, ['n1']);
-    assert.match(payload?.text ?? '', /^cws-finding:[0-9a-f]{16} \[critical\]/);
+    assert.match(payload?.text ?? '', /^cws-finding:[0-9a-f]{32} \[critical\]/);
   });
 
   it('lists recorded and open findings', () => {
