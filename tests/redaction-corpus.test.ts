@@ -39,7 +39,8 @@ function ruleSecrets(): string[] {
     if (!source) return [];
     assert.ok(id, `missing id in gitleaks rule ${index + 1}`);
     const matcher = generationRegex(source);
-    const generated = fc.sample(fc.stringMatching(matcher), 1, { seed: index + 1 })[0];
+    const generated = fc.sample(fc.stringMatching(matcher), { numRuns: 1, seed: index + 1 })[0];
+    assert.ok(generated, `no sample generated for ${id}`);
     const match = matcher.exec(generated);
     assert.ok(match, `generated value does not match ${id}`);
     return [match.slice(1).filter(Boolean).sort((a, b) => b.length - a.length)[0] ?? match[0]!];

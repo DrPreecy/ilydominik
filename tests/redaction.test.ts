@@ -101,7 +101,7 @@ describe('ordinary text is left alone', () => {
   it('changes at most 0.5% of the lines of the repo prose', () => {
     const root = path.resolve(import.meta.dirname, '..');
     const docs = path.join(root, 'docs');
-    const files = ['README.md', ...fs.readdirSync(docs, { recursive: true }).filter((f) => f.endsWith('.md')).map((f) => path.join('docs', f))];
+    const files = ['README.md', ...fs.readdirSync(docs, { recursive: true, encoding: 'utf8' }).filter((f) => f.endsWith('.md')).map((f) => path.join('docs', f))];
     const lines = files.flatMap((f) => fs.readFileSync(path.join(root, f), 'utf8').split(/\r?\n/));
     const changed = lines.filter((line) => maskSecrets(line) !== line);
     assert.ok(lines.length > 500, `only ${lines.length} lines read`);
