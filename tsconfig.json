@@ -12,5 +12,6 @@
     "noEmit": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["src/**/*", "tests/**/*"]
+  "include": ["src/**/*", "tests/**/*"],
+  "exclude": ["node_modules", "tests/redteam*/**/*"]
 }
